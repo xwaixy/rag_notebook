@@ -13,6 +13,74 @@ from app.core.logger_handler import logger
 load_dotenv()
 
 
+def normalize_openai_proxy_env() -> None:
+    """兼容部分代理软件导出的 socks:// 地址格式。"""
+    proxy_keys = (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    )
+    for key in proxy_keys:
+        value = os.getenv(key)
+        if value and value.lower().startswith("socks://"):
+            os.environ[key] = f"socks5://{value[len('socks://'):]}"
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_openai_compat_headers(request) -> None:
+    request.headers["User-Agent"] = os.getenv("OPENAI_USER_AGENT", "curl/8.0.0")
+
+
+async def _async_apply_openai_compat_headers(request) -> None:
+    _apply_openai_compat_headers(request)
+
+
+def create_openai_chat_model(model_name: str, streaming: bool = True) -> BaseChatModel:
+    """根据项目环境变量创建 OpenAI 兼容聊天模型。"""
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    normalize_openai_proxy_env()
+    trust_env = _env_bool("OPENAI_TRUST_ENV", False)
+
+    kwargs = {
+        "model": model_name,
+        "api_key": os.getenv("OPENAI_API_KEY"),
+        "base_url": os.getenv("OPENAI_BASE_URL") or None,
+        "streaming": streaming,
+        "http_client": httpx.Client(
+            event_hooks={"request": [_apply_openai_compat_headers]},
+            trust_env=trust_env,
+        ),
+        "http_async_client": httpx.AsyncClient(
+            event_hooks={"request": [_async_apply_openai_compat_headers]},
+            trust_env=trust_env,
+        ),
+    }
+
+    use_responses_api = _env_bool("OPENAI_USE_RESPONSES_API")
+    if use_responses_api:
+        kwargs["use_responses_api"] = True
+
+        reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT")
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        if _env_bool("OPENAI_DISABLE_RESPONSE_STORAGE"):
+            kwargs["store"] = False
+
+    return ChatOpenAI(**kwargs)
+
+
 class DashScopeEmbeddingsWrapper(Embeddings):
     """阿里云DashScope嵌入模型封装"""
 
@@ -53,6 +121,53 @@ class DashScopeEmbeddingsWrapper(Embeddings):
             return []
 
 
+class LocalQwenEmbeddingsWrapper(Embeddings):
+    """本地 Qwen3 Embedding 模型封装"""
+
+    def __init__(self, model_path: str, device: str | None = None):
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            if device == "cuda":
+                try:
+                    import torch
+
+                    if not torch.cuda.is_available():
+                        logger.warning("本地Qwen嵌入模型请求使用cuda，但当前环境不可用，自动降级为cpu")
+                        device = "cpu"
+                except ImportError:
+                    logger.warning("未安装torch，无法检查cuda状态，本地Qwen嵌入模型自动降级为cpu")
+                    device = "cpu"
+
+            kwargs = {}
+            if device:
+                kwargs["device"] = device
+
+            try:
+                self.model = SentenceTransformer(model_path, **kwargs)
+            except RuntimeError as e:
+                if device == "cuda" and "out of memory" in str(e).lower():
+                    logger.warning("本地Qwen嵌入模型加载到cuda时显存不足，自动降级为cpu")
+                    self.model = SentenceTransformer(model_path, device="cpu")
+                else:
+                    raise
+        except ImportError:
+            raise ImportError("需要安装 sentence-transformers 库: pip install sentence-transformers")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """批量嵌入文档"""
+        embeddings = self.model.encode(
+            texts,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        )
+        return embeddings.tolist()
+
+    def embed_query(self, text: str) -> list[float]:
+        """嵌入单个查询"""
+        return self.embed_documents([text])[0]
+
+
 class BaseModelFactory(ABC):
     """基础模型工厂"""
 
@@ -63,7 +178,7 @@ class BaseModelFactory(ABC):
 
 
 class ChatModelFactory(BaseModelFactory):
-    """聊天模型工厂 - 支持阿里云百炼和Ollama"""
+    """聊天模型工厂 - 支持阿里云百炼、Ollama 和 OpenAI"""
 
     def generator(self) -> Embeddings | BaseChatModel | None:
         """根据LLM_TYPE生成对应的聊天模型"""
@@ -97,12 +212,19 @@ class ChatModelFactory(BaseModelFactory):
                 top_p=0.7,
             )
 
+        elif llm_type == "OPENAI":
+            model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-5.5")
+
+            logger.info(f"📦 ChatModel 使用OpenAI模型: {model_name}")
+
+            return create_openai_chat_model(model_name=model_name, streaming=True)
+
         else:
-            raise ValueError(f"不支持的LLM_TYPE: {llm_type}，可选值: ALIYUN, OLLAMA")
+            raise ValueError(f"不支持的LLM_TYPE: {llm_type}，可选值: ALIYUN, OLLAMA, OPENAI")
 
 
 class EmbedModelFactory(BaseModelFactory):
-    """嵌入模型工厂 - 支持Ollama和阿里云百炼"""
+    """嵌入模型工厂 - 支持Ollama、阿里云百炼和本地Qwen"""
     def generator(self) -> Embeddings | BaseChatModel | None:
         """根据EMBED_MODEL_TYPE生成对应的嵌入模型"""
         embed_type = os.getenv("EMBED_MODEL_TYPE", "OLLAMA").upper()
@@ -129,8 +251,19 @@ class EmbedModelFactory(BaseModelFactory):
                 api_key=api_key
             )
 
+        elif embed_type == "LOCAL_QWEN":
+            model_path = os.getenv("LOCAL_EMBED_MODEL_PATH", "/home/wyl/models/Qwen3-Embedding-0.6B")
+            device = os.getenv("LOCAL_EMBED_DEVICE") or None
+
+            logger.info(f"📦 EmbedModel 使用本地Qwen嵌入模型: {model_path}, 设备: {device or 'auto'}")
+
+            return LocalQwenEmbeddingsWrapper(
+                model_path=model_path,
+                device=device
+            )
+
         else:
-            raise ValueError(f"不支持的EMBED_MODEL_TYPE: {embed_type}，可选值: OLLAMA, ALIYUN")
+            raise ValueError(f"不支持的EMBED_MODEL_TYPE: {embed_type}，可选值: OLLAMA, ALIYUN, LOCAL_QWEN")
 
 
 class VisionModelFactory(BaseModelFactory):
@@ -150,6 +283,10 @@ class VisionModelFactory(BaseModelFactory):
         """根据VISION_MODEL_TYPE生成对应的视觉模型"""
         # 未设置 VISION_MODEL_TYPE 时，默认跟随 LLM_TYPE（保持向后兼容）
         vision_type = os.getenv("VISION_MODEL_TYPE", "").upper() or os.getenv("LLM_TYPE", "ALIYUN").upper()
+
+        if vision_type in {"DISABLED", "NONE", "OFF"}:
+            logger.info("🎨 VisionModel 已禁用")
+            return None
 
         if vision_type == "OLLAMA":
             model_name = os.getenv("VISION_OLLAMA_MODEL_NAME") or os.getenv("OLLAMA_MODEL_NAME") or "qwen-vl:7b"
@@ -181,7 +318,7 @@ class VisionModelFactory(BaseModelFactory):
             )
 
         else:
-            raise ValueError(f"不支持的VISION_MODEL_TYPE: {vision_type}，可选值: ALIYUN, OLLAMA")
+            raise ValueError(f"不支持的VISION_MODEL_TYPE: {vision_type}，可选值: ALIYUN, OLLAMA, DISABLED")
 
 
 class RerankerModelFactory(BaseModelFactory):

@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -8,6 +9,20 @@ from app.core.background_init import init_manager
 from app.core.logger_handler import logger
 from app.rag.vector_store import VectorStoreService
 from app.utils.prompt_loader import load_prompt
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
 
 class RagService:
@@ -21,10 +36,24 @@ class RagService:
         self.chat_model = init_manager.chat_model
         self.chain = self._init_chain()
         self.hyde_prompt_template = PromptTemplate.from_template(
-            "基于以下问题，生成一个详细的假设性回答，我会根据你的这个假设性回答"
-            "在向量数据库里检索文档：\n\n问题：{query}\n\n假设性回答："
+            "基于用户问题，生成用于向量检索的简短检索文本。\n"
+            "要求：\n"
+            "1. 不要正式回答问题，不要编造用户身份、账号、权限或背景。\n"
+            "2. 只写可能出现在用户资料、笔记或知识库里的关键词和短句。\n"
+            "3. 最多80个中文字符，逗号分隔。\n\n"
+            "用户问题：{query}\n\n"
+            "检索文本："
         )
         self.thinking_callback = thinking_callback
+        self.hyde_timeout = _env_float("HYDE_TIMEOUT_SECONDS", 8.0)
+        self.hyde_max_chars = _env_int("HYDE_MAX_CHARS", 160)
+        self.original_vector_k = _env_int("RAG_ORIGINAL_VECTOR_K", 3)
+        self.note_k = _env_int("RAG_NOTE_K", 2)
+        self.hyde_k = _env_int("RAG_HYDE_K", 3)
+        self.summary_mode = os.getenv("RAG_SUMMARY_MODE", "fast").lower()
+        self.summary_doc_count = _env_int("RAG_SUMMARY_DOC_COUNT", 3)
+        self.summary_doc_chars = _env_int("RAG_SUMMARY_DOC_CHARS", 700)
+        self.summary_timeout = _env_float("RAG_SUMMARY_TIMEOUT_SECONDS", 12.0)
 
     async def initialize_retriever(self, query: str = None):
         """
@@ -71,9 +100,18 @@ class RagService:
                 | self.chat_model
                 | StrOutputParser()
             )
-            hypothetical_doc = await hyde_chain.ainvoke({"query": query})
+            hypothetical_doc = await asyncio.wait_for(
+                hyde_chain.ainvoke({"query": query}),
+                timeout=self.hyde_timeout
+            )
+            hypothetical_doc = " ".join(hypothetical_doc.split())
+            if len(hypothetical_doc) > self.hyde_max_chars:
+                hypothetical_doc = hypothetical_doc[:self.hyde_max_chars]
             logger.info(f"【HyDE】生成的假设性文档:\n{hypothetical_doc}")
             return hypothetical_doc
+        except TimeoutError:
+            logger.warning("【HyDE】生成假设性文档超时，回退为原始问题")
+            return query
         except Exception as e:
             logger.error(f"【HyDE】生成假设性文档失败: {e}")
             return query
@@ -97,7 +135,7 @@ class RagService:
                 await self.thinking_callback({
                     "type": "thinking",
                     "stage": "hyde",
-                    "content": f"正在基于查询「{query}」生成假设性文档..."
+                    "content": f"正在基于查询「{query}」生成简短检索文本..."
                 })
 
             hypothetical_doc = await self.generate_hypothetical_document(query)
@@ -106,11 +144,44 @@ class RagService:
                 await self.thinking_callback({
                     "type": "thinking",
                     "stage": "hyde",
-                    "content": "假设性文档生成完成",
+                    "content": "HyDE 检索文本生成完成",
                     "details": {
                         "hypothetical_doc_preview": hypothetical_doc[:200] + "..." if len(hypothetical_doc) > 200 else hypothetical_doc
                     }
                 })
+
+            # 同时使用原始问题和假设性文档检索。
+            # 只用 HyDE 容易在假设回答猜错时发生查询漂移，例如把“喜欢什么动物”猜成“喜欢猫”，
+            # 从而错过原始问题能直接命中的用户资料。
+            logger.info("【HyDE】使用原始问题进行检索")
+            original_vector_documents = await asyncio.to_thread(
+                self.vector_store.vectors_store.similarity_search,
+                query, k=self.original_vector_k,
+                filter={"user_id": self.user_id}
+            )
+            original_documents = (await self.retriever.ainvoke(query))[:self.original_vector_k]
+
+            original_note_docs = []
+            try:
+                original_note_docs = await asyncio.to_thread(
+                    self.note_service.notes_store.similarity_search,
+                    query, k=self.note_k,
+                    filter={"user_id": self.user_id}
+                )
+            except Exception as e:
+                logger.error(f"【RAG】使用原始问题检索笔记失败: {e}")
+
+            for doc in original_vector_documents:
+                doc.metadata["source_type"] = "knowledge_base"
+                doc.metadata["retrieval_source"] = "original_vector_query"
+            for doc in original_documents:
+                doc.metadata["source_type"] = "knowledge_base"
+                doc.metadata["retrieval_source"] = "original_query"
+            for doc in original_note_docs:
+                doc.metadata["source_type"] = "note"
+                doc.metadata["retrieval_source"] = "original_query"
+
+            original_all_documents = original_vector_documents + original_documents + original_note_docs
 
             # 使用假设性文档进行检索
             logger.info("【HyDE】使用假设性文档进行检索")
@@ -122,14 +193,14 @@ class RagService:
                     "content": "正在向量数据库中检索相关文档..."
                 })
 
-            documents = await self.retriever.ainvoke(hypothetical_doc)
+            documents = (await self.retriever.ainvoke(hypothetical_doc))[:self.hyde_k]
 
             # 同时检索笔记库
             note_docs = []
             try:
                 note_docs = await asyncio.to_thread(
                     self.note_service.notes_store.similarity_search,
-                    hypothetical_doc, k=3,
+                    hypothetical_doc, k=self.note_k,
                     filter={"user_id": self.user_id}
                 )
             except Exception as e:
@@ -138,11 +209,30 @@ class RagService:
             # 标记来源并合并（笔记在前，知识库在后）
             for doc in documents:
                 doc.metadata["source_type"] = "knowledge_base"
+                doc.metadata["retrieval_source"] = "hyde"
             for doc in note_docs:
                 doc.metadata["source_type"] = "note"
-            all_documents = note_docs + documents
+                doc.metadata["retrieval_source"] = "hyde"
 
-            logger.info(f"【HyDE】检索到 {len(documents)} 个知识库文档, {len(note_docs)} 个笔记文档")
+            # 原始问题命中的文档优先，HyDE 结果补充召回；按内容和来源去重。
+            seen = set()
+            all_documents = []
+            for doc in original_all_documents + note_docs + documents:
+                key = (
+                    doc.metadata.get("source_type"),
+                    doc.metadata.get("original_filename") or doc.metadata.get("title") or doc.metadata.get("source"),
+                    doc.page_content[:200],
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_documents.append(doc)
+
+            logger.info(
+                f"【HyDE】原始问题检索到 {len(original_documents)} 个知识库文档, {len(original_note_docs)} 个笔记文档；"
+                f"假设性文档检索到 {len(documents)} 个知识库文档, {len(note_docs)} 个笔记文档；"
+                f"合并后 {len(all_documents)} 个文档"
+            )
 
             if self.thinking_callback:
                 doc_previews = []
@@ -185,6 +275,16 @@ class RagService:
                 "stage": "reorder",
                 "content": f"正在对 {len(documents)} 个文档进行重排序..."
             })
+
+        if os.getenv("RERANKER_ENABLED", "false").lower() != "true":
+            logger.info("【RAG】重排序已禁用，保留检索原始顺序")
+            if self.thinking_callback:
+                await self.thinking_callback({
+                    "type": "thinking",
+                    "stage": "reorder",
+                    "content": "重排序已禁用，保留检索原始顺序"
+                })
+            return documents
 
         result = await init_manager.reorder_service.reorder_documents(query, documents, thinking_callback=self.thinking_callback)
         if result["success"]:
@@ -252,11 +352,37 @@ class RagService:
                     "summary": "抱歉，我没有找到相关的信息。"
                 }
 
+            def build_fast_summary(docs: list[str]) -> str:
+                selected_docs = docs[:self.summary_doc_count]
+                snippets = []
+                for i, doc in enumerate(selected_docs, 1):
+                    compact = " ".join(str(doc).split())
+                    if len(compact) > self.summary_doc_chars:
+                        compact = compact[:self.summary_doc_chars] + "..."
+                    snippets.append(f"{i}. {compact}")
+                return (
+                    "已检索到以下相关资料片段，请结合这些资料回答用户问题：\n"
+                    + "\n".join(snippets)
+                )
+
+            if self.summary_mode in {"fast", "none", "off", "disabled"}:
+                logger.info("【RAG】使用快速摘要模式，跳过LLM分批总结")
+                if self.thinking_callback:
+                    await self.thinking_callback({
+                        "type": "thinking",
+                        "stage": "summarize",
+                        "content": f"已启用快速模式，直接使用前 {min(self.summary_doc_count, len(reordered_documents))} 个相关资料片段"
+                    })
+                return {
+                    "documents": reordered_documents,
+                    "summary": build_fast_summary(reordered_documents)
+                }
+
             # 使用分批总结策略
             try:
                 # 对每个文档单独总结（使用线程池并发处理）
                 individual_summaries = []
-                max_documents = 3  # 使用前3个最相关的文档
+                max_documents = self.summary_doc_count
 
                 if self.thinking_callback:
                     await self.thinking_callback({
@@ -281,7 +407,7 @@ class RagService:
                     start_time = time.time()
                     single_summary = await asyncio.wait_for(
                         self.chain.ainvoke({"input": query, "context": single_context}),
-                        timeout=30.0  # 单个文档总结超时时间
+                        timeout=self.summary_timeout
                     )
                     end_time = time.time()
                     logger.info(f"【RAG】第{i}个文档总结耗时: {end_time - start_time:.2f}秒")
@@ -324,7 +450,7 @@ class RagService:
                 # 生成最终总结
                 final_summary = await asyncio.wait_for(
                     self.chain.ainvoke({"input": query, "context": combined_context}),
-                    timeout=30.0  # 最终总结超时时间
+                    timeout=self.summary_timeout
                 )
 
                 logger.info("【RAG】生成摘要成功")
@@ -334,6 +460,14 @@ class RagService:
                 }
             except TimeoutError:
                 logger.error("【RAG】生成摘要超时")
+                if individual_summaries:
+                    fallback_summary = "\n".join(summary for summary in individual_summaries if summary).strip()
+                    if fallback_summary:
+                        logger.info("【RAG】使用已生成的单文档摘要作为超时兜底结果")
+                        return {
+                            "documents": reordered_documents,
+                            "summary": fallback_summary
+                        }
                 return {
                     "documents": reordered_documents,
                     "summary": "抱歉，生成摘要超时，请稍后再试。"

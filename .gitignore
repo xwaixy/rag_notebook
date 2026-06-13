@@ -26,6 +26,8 @@ venv.bak/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 .env.local
 .env.development.local
 .env.test.local
@@ -65,6 +67,10 @@ langchain-*/
 
 # ChromaDB
 chromadb/
+
+# Local model files
+models/
+backend/D:*
 
 # Jupyter notebooks
 .ipynb_checkpoints/

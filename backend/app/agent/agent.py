@@ -8,7 +8,10 @@ from langchain_community.chat_models import ChatTongyi
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import BaseTool
+<<<<<<< Updated upstream
 from langchain_ollama import ChatOllama
+=======
+>>>>>>> Stashed changes
 from langsmith import traceable
 
 from app.agent.agent_middleware import get_middleware
@@ -89,6 +92,8 @@ class AgentFactory:
         llm_type = os.getenv("LLM_TYPE", "ALIYUN").upper()
 
         if llm_type == "OLLAMA":
+            from langchain_ollama import ChatOllama
+
             model_name = custom_model or os.getenv("OLLAMA_MODEL_NAME", self.model)
             base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -116,13 +121,22 @@ class AgentFactory:
                 top_p=0.7,
             )
 
+        elif llm_type == "OPENAI":
+            from app.utils.factory import create_openai_chat_model
+
+            model_name = custom_model or os.getenv("OPENAI_MODEL_NAME", "gpt-5.5")
+
+            logger.info(f"🤖 Agent使用OpenAI模型: {model_name}")
+
+            return create_openai_chat_model(model_name=model_name, streaming=True)
+
         else:
-            raise ValueError(f"不支持的LLM_TYPE: {llm_type}，可选值: ALIYUN, OLLAMA")
+            raise ValueError(f"不支持的LLM_TYPE: {llm_type}，可选值: ALIYUN, OLLAMA, OPENAI")
 
     def _create_prompt(self, custom_system_prompt: str | None = None) -> ChatPromptTemplate:
         """内部方法：创建提示词模板"""
         return ChatPromptTemplate.from_messages([
-            ("system", "{system_prompt}"),
+            ("system", "{system_prompt}\n\n{retrieval_context}"),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad")
@@ -179,6 +193,53 @@ def get_agent_executor():
     return agent_factory.create_agent_executor()
 
 
+async def _build_retrieval_context(query: str, user_id: str | None, thinking_callback=None) -> str:
+    """在 Agent 执行前预检索用户笔记和知识库上下文。"""
+    if os.getenv("AGENT_PREFETCH_RAG", "true").lower() != "true":
+        return "## 预检索结果\n本轮未启用预检索。"
+
+    if not user_id:
+        return "## 预检索结果\n无法确定当前用户，未检索用户私有资料。"
+
+    try:
+        from app.rag.rag_service import RagService
+
+        result = await RagService(user_id, thinking_callback=thinking_callback).get_documents_and_summary(query)
+        documents = result.get("documents") or []
+        summary = result.get("summary", "").strip()
+
+        if not documents:
+            return (
+                "## 预检索结果\n"
+                "已先生成假设性文档并检索用户笔记和知识库，但没有找到相关资料。"
+                "如果问题可以基于通用知识回答，请自主回答，并说明未在用户资料中找到依据。"
+            )
+
+        doc_lines = []
+        for index, document in enumerate(documents[:5], 1):
+            preview = str(document).replace("\n", " ").strip()
+            if len(preview) > 500:
+                preview = preview[:500] + "..."
+            doc_lines.append(f"{index}. {preview}")
+
+        return (
+            "## 预检索结果\n"
+            "已先生成假设性文档，并检索用户笔记和知识库。回答时优先依据以下资料；"
+            "除非明显需要补充资料，否则不要重复调用 `rag_summary_tools`。\n\n"
+            f"摘要：{summary or '未生成摘要'}\n\n"
+            "相关资料：\n"
+            + "\n".join(doc_lines)
+        )
+
+    except Exception as e:
+        logger.error(f"Agent 预检索失败: {e}", exc_info=True)
+        return (
+            "## 预检索结果\n"
+            "预检索用户笔记和知识库时出现错误。"
+            "如果问题可以基于通用知识回答，请自主回答，并简要说明未能使用用户资料。"
+        )
+
+
 async def get_agent_response(
         query: str,
         history: list[tuple] | None = None,
@@ -201,6 +262,7 @@ async def get_agent_response(
     try:
         # 1. 从工厂获取全新的 Executor 实例
         agent_executor = agent_factory.create_agent_executor(custom_tools=custom_tools, **kwargs)
+        retrieval_context = await _build_retrieval_context(query, user_id)
 
         # 2. 构建聊天历史
         chat_history: list[BaseMessage] = []
@@ -216,7 +278,8 @@ async def get_agent_response(
         async for chunk in agent_executor.astream({
             "input": query,
             "chat_history": chat_history,
-            "system_prompt": agent_factory.default_system_prompt
+            "system_prompt": agent_factory.default_system_prompt,
+            "retrieval_context": retrieval_context
         }):
             if "output" in chunk:
                 full_response.append(chunk["output"])
@@ -291,13 +354,15 @@ async def get_agent_stream_response(
                     chat_history.append(AIMessage(content=assistant_msg))
 
             agent_executor = agent_factory.create_agent_executor(custom_tools=custom_tools, **kwargs)
+            retrieval_context = await _build_retrieval_context(query, user_id, thinking_callback)
 
             full_response = []
 
             async for chunk in agent_executor.astream({
                 "input": query,
                 "chat_history": chat_history,
-                "system_prompt": agent_factory.default_system_prompt
+                "system_prompt": agent_factory.default_system_prompt,
+                "retrieval_context": retrieval_context
             }):
                 if "output" in chunk:
                     full_response.append(chunk["output"])

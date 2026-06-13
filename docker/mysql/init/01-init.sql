@@ -1,0 +1,9 @@
+CREATE DATABASE IF NOT EXISTS user_service CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS chat_history CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS 'rag_app'@'%' IDENTIFIED BY '123456';
+
+GRANT ALL PRIVILEGES ON user_service.* TO 'rag_app'@'%';
+GRANT ALL PRIVILEGES ON chat_history.* TO 'rag_app'@'%';
+
+FLUSH PRIVILEGES;

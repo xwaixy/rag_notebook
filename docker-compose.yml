@@ -1,0 +1,71 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rag-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  django:
+    build:
+      context: ./DjangoUserService
+    container_name: rag-django
+    restart: unless-stopped
+    env_file:
+      - ./DjangoUserService/.env.docker
+    depends_on:
+      - mysql
+      - redis
+    volumes:
+      - django_media:/app/media
+    ports:
+      - "8001:8001"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: rag-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      - mysql
+      - redis
+      - django
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/logs:/app/logs
+      - /home/wyl/models:/models:ro
+    ports:
+      - "8000:8000"
+
+  front:
+    build:
+      context: ./front
+    container_name: rag-front
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - django
+    ports:
+      - "3000:80"
+
+volumes:
+  mysql_data:
+  redis_data:
+  django_media:

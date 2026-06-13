@@ -55,6 +55,7 @@ def check_and_download_reranker_model() -> None:
         raise RuntimeError(f"重排序模型检查失败: {str(e)}")
 
 
+<<<<<<< Updated upstream
 class ReorderService:
     """文档重排序服务"""
 
@@ -73,6 +74,27 @@ class ReorderService:
         if self._model is None:
             actual_model_path = find_model_path(self.LOCAL_MODEL_PATH)
             logger.info(f"✅ 加载重排序模型：{actual_model_path}")
+=======
+class ReorderService:
+    """文档重排序服务"""
+
+    def __init__(self):
+        self.LOCAL_MODEL_PATH = os.getenv("RERANKER_MODEL_PATH", r"D:\Hugging_Face\models\Qwen3-Reranker-0.6B")
+        self.MODELSCOPE_MODEL_NAME = "Qwen/Qwen3-Reranker-0.6B"
+        self.device = os.getenv("RERANKER_DEVICE", "cpu")
+        self._model = None
+
+    async def _get_model(self):
+        """懒加载模型实例"""
+        import torch
+        from sentence_transformers import CrossEncoder
+
+        configured_device = os.getenv("RERANKER_DEVICE", "cpu").lower()
+        self.device = "cuda" if configured_device == "cuda" and torch.cuda.is_available() else "cpu"
+        if self._model is None:
+            actual_model_path = find_model_path(self.LOCAL_MODEL_PATH)
+            logger.info(f"✅ 加载重排序模型：{actual_model_path}")
+>>>>>>> Stashed changes
             self._model = CrossEncoder(
                 actual_model_path,
                 max_length=512,
