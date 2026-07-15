@@ -46,6 +46,7 @@ import { showDialog, showToast, showLoadingToast, showSuccessToast, showFailToas
 import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { apiConfig } from '../config/api';
+import { getAuthHeaders, getLoginRedirect, isAuthenticated } from '../utils/auth';
 
 const router = useRouter();
 const userStore = useUserStore();
@@ -53,8 +54,8 @@ const userStore = useUserStore();
 // 初始化用户状态
 onMounted(async () => {
   // 如果用户未登录，跳转到登录页面
-  if (!userStore.getLoginStatus) {
-    router.push('/login');
+  if (!isAuthenticated()) {
+    router.replace(getLoginRedirect(router.currentRoute.value.fullPath));
     return;
   }
   
@@ -66,8 +67,6 @@ onMounted(async () => {
       forbidClick: true,
       duration: 0
     });
-    
-    console.log('获取用户信息，当前token:', userStore.token);
     
     // 使用新的 getUserInfoDetail 方法
     const result = await userStore.getUserInfoDetail();
@@ -93,7 +92,6 @@ onMounted(async () => {
 });
 
 const userInfo = computed(() => userStore.userInfo);
-const userId = computed(() => userStore.token ? userStore.token.substring(0, 5) : '');
 const userBio = computed(() => userStore.userInfo?.bio || '暂无简介');
 
 const genderText = computed(() => {
@@ -133,6 +131,68 @@ const lastLoginText = computed(() => {
     minute: '2-digit'
   });
 });
+
+const MAX_AVATAR_SIZE = 2 * 1024 * 1024;
+const ALLOWED_AVATAR_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif']);
+const ALLOWED_AVATAR_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif'];
+
+const validateAvatarFile = (file) => {
+  if (!file) {
+    return '请选择要上传的图片';
+  }
+
+  const fileName = file.name.toLowerCase();
+  const hasAllowedExtension = ALLOWED_AVATAR_EXTENSIONS.some((extension) => fileName.endsWith(extension));
+
+  if (!ALLOWED_AVATAR_TYPES.has(file.type) && !hasAllowedExtension) {
+    return '仅支持 jpg、jpeg、png、gif 格式';
+  }
+
+  if (file.size > MAX_AVATAR_SIZE) {
+    return '图片大小不能超过2MB';
+  }
+
+  return '';
+};
+
+const getAvatarUploadErrorMessage = (error) => {
+  if (error.code === 'ECONNABORTED') {
+    return '头像上传超时，请稍后重试';
+  }
+
+  const data = error.response?.data;
+  if (!data) {
+    return '头像上传失败';
+  }
+
+  if (typeof data.message === 'string') {
+    return data.message;
+  }
+
+  if (typeof data.detail === 'string') {
+    return data.detail;
+  }
+
+  const imgError = data.img;
+  if (Array.isArray(imgError) && imgError.length > 0) {
+    return String(imgError[0]);
+  }
+
+  if (typeof imgError === 'string') {
+    return imgError;
+  }
+
+  const firstError = Object.values(data).find(Boolean);
+  if (Array.isArray(firstError) && firstError.length > 0) {
+    return String(firstError[0]);
+  }
+
+  if (typeof firstError === 'string') {
+    return firstError;
+  }
+
+  return '头像上传失败';
+};
 
 const showPasswordConfirm = () => {
   // 使用ref创建响应式变量
@@ -562,10 +622,18 @@ const showAvatarDialog = () => {
       h('div', { style: 'margin-bottom: 15px;' }, [
         h('input', {
           type: 'file',
-          accept: 'image/*',
-          onInput: (e) => {
-            const file = e.target.files[0];
+          accept: '.jpg,.jpeg,.png,.gif',
+          onChange: (e) => {
+            const file = e.target.files?.[0];
             if (file) {
+              const validationMessage = validateAvatarFile(file);
+              if (validationMessage) {
+                selectedFile.value = null;
+                e.target.value = '';
+                showFailToast(validationMessage);
+                return;
+              }
+
               selectedFile.value = file;
               // 生成预览URL
               previewUrl.value = URL.createObjectURL(file);
@@ -578,14 +646,17 @@ const showAvatarDialog = () => {
     ])
   }).then(async () => {
     // 点击确认按钮
-    if (!selectedFile.value) {
-      showToast('请选择要上传的图片');
+    const validationMessage = validateAvatarFile(selectedFile.value);
+    if (validationMessage) {
+      showToast(validationMessage);
       return;
     }
     
+    let loadingInstance = null;
+
     try {
       // 显示加载提示
-      const loadingInstance = showLoadingToast({
+      loadingInstance = showLoadingToast({
         message: '上传中...',
         forbidClick: true,
         duration: 0
@@ -597,26 +668,26 @@ const showAvatarDialog = () => {
       
       // 发送上传请求
       const response = await axios.post(`${apiConfig.userBaseURL}${apiConfig.endpoints.uploadFile}`, formData, {
-        headers: {
-          'Authorization': `Bearer ${userStore.token}`,
-          'Content-Type': 'multipart/form-data'
-        }
+        headers: getAuthHeaders(),
+        timeout: 30000
       });
       
-      // 关闭加载提示
+      // 先关闭上传提示，再刷新用户信息，避免后续请求慢时一直显示“上传中”。
       loadingInstance.close();
+      loadingInstance = null;
       
       if (response.data && response.data.success) {
         // 更新用户信息
         await userStore.getUserInfoDetail();
         showSuccessToast('头像上传成功');
       } else {
-        showFailToast((response.data && response.data.message) || '头像上传失败');
+        showFailToast(getAvatarUploadErrorMessage({ response }));
       }
     } catch (error) {
       console.error('上传头像失败:', error);
-      showToast.clear();
-      showToast.fail('头像上传失败');
+      showFailToast(getAvatarUploadErrorMessage(error));
+    } finally {
+      loadingInstance?.close();
     }
   }).catch(() => {
     // 点击取消按钮

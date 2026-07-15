@@ -17,6 +17,17 @@ from app.core.logger_handler import logger
 from app.utils.path_tool import get_abstract_path
 
 
+TEXT_ENCODINGS = ['utf-8-sig', 'utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'gb18030', 'gbk']
+
+
+def _load_text_document_direct(abs_file_path: str, encoding: str) -> list[Document]:
+    with open(abs_file_path, encoding=encoding) as f:
+        content = f.read()
+    if not content.strip():
+        return []
+    return [Document(page_content=content, metadata={"source": abs_file_path})]
+
+
 class FontBBoxStreamFilter:
     def __init__(self, stream):
         self.stream = stream
@@ -117,16 +128,20 @@ async def txt_loader(file_path: str) -> list[Document]:
     # 处理路径，确保使用绝对路径
     abs_file_path = get_abstract_path(file_path) if not os.path.isabs(file_path) else file_path
 
-    # 使用不同的编码加载文件
-    encodings = ['utf-8', 'gbk']
-    for encoding in encodings:
+    for encoding in TEXT_ENCODINGS:
         try:
             loader = TextLoader(abs_file_path, encoding=encoding)
-            return await asyncio.to_thread(loader.load)
+            docs = await asyncio.to_thread(loader.load)
+            if docs and any(doc.page_content.strip() for doc in docs):
+                return docs
         except Exception as e:
             logger.error(f"【文本文件加载】使用编码 {encoding} 加载文件 {abs_file_path} 时出错: {e}")
-            continue
-    # 所有编码都失败，返回空列表
+        try:
+            docs = await asyncio.to_thread(_load_text_document_direct, abs_file_path, encoding)
+            if docs:
+                return docs
+        except Exception as e:
+            logger.error(f"【文本文件加载】直接读取编码 {encoding} 文件 {abs_file_path} 时出错: {e}")
     return []
 
 async def word_loader(file_path: str) -> list[Document]:
@@ -231,14 +246,20 @@ def txt_loader_sync(file_path: str) -> list[Document]:
     """
     abs_file_path = get_abstract_path(file_path) if not os.path.isabs(file_path) else file_path
 
-    encodings = ['utf-8', 'gbk']
-    for encoding in encodings:
+    for encoding in TEXT_ENCODINGS:
         try:
             loader = TextLoader(abs_file_path, encoding=encoding)
-            return loader.load()
+            docs = loader.load()
+            if docs and any(doc.page_content.strip() for doc in docs):
+                return docs
         except Exception as e:
             logger.error(f"【文本文件加载】使用编码 {encoding} 加载文件 {abs_file_path} 时出错: {e}")
-            continue
+        try:
+            docs = _load_text_document_direct(abs_file_path, encoding)
+            if docs:
+                return docs
+        except Exception as e:
+            logger.error(f"【文本文件加载】直接读取编码 {encoding} 文件 {abs_file_path} 时出错: {e}")
     return []
 
 

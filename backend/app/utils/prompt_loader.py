@@ -11,8 +11,10 @@ def load_prompt(prompt_type: str = 'main_prompt'):
         prompt_type: 提示词类型，对应prompt_config中的键名
             - main_prompt: 主要提示词
             - rag_summary_prompt: RAG摘要提示词
-            - report_prompt: 报告提示词
-            - reorder_prompt: 文档重排序提示词
+            - auto_tag_prompt: 笔记自动标签提示词
+            - review_question_prompt: 回顾题生成提示词
+            - autocomplete_prompt: 自动补全提示词
+            - write_assistant_prompt: 写作辅助提示词
 
     Returns:
         提示词模板内容
@@ -33,6 +35,3 @@ def load_prompt(prompt_type: str = 'main_prompt'):
     except Exception as e:
         logger.error(f"【加载提示词模板】读取 {prompt_path} 时出错: {e}")
         raise e
-
-if __name__ == '__main__':
-    print(load_prompt('report_prompt'))

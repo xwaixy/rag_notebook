@@ -15,6 +15,10 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.uv-cache/
+**/.uv-cache/
+.local/
+.superpowers/
 
 # IDE
 .idea/
@@ -28,6 +32,7 @@ venv.bak/
 .env
 .env.*
 !.env.example
+!.env*.example
 .env.local
 .env.development.local
 .env.test.local
@@ -69,7 +74,7 @@ langchain-*/
 chromadb/
 
 # Local model files
-models/
+/models/
 backend/D:*
 
 # Jupyter notebooks
@@ -101,4 +106,3 @@ ehthumbs_vista.db
 
 # CodeGraph index
 .codegraph/
-

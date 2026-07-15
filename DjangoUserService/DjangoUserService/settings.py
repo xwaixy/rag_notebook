@@ -166,15 +166,6 @@ CELERY_TASK_SOFT_TIME_LIMIT = 8
 # 任务结果过期时间（秒）
 CELERY_RESULT_EXPIRES = 3600
 
-<<<<<<< Updated upstream
-# redis缓存设置
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': os.getenv('REDIS_CACHE_URL'),
-    }
-}
-=======
 if os.getenv('REDIS_CACHE_URL'):
     CACHES = {
         'default': {
@@ -189,7 +180,6 @@ else:
             'LOCATION': 'rag-notebook-local-cache',
         }
     }
->>>>>>> Stashed changes
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -257,8 +247,4 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 10
 }
 
-<<<<<<< Updated upstream
 APPEND_SLASH = True
-=======
-APPEND_SLASH = True
->>>>>>> Stashed changes

@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 
 from app.core.logger_handler import logger
 from app.utils.config import chroma_config
+from app.utils.chroma_settings import chroma_collection_metadata
 from app.utils.image_extractor import delete_image_directory, delete_user_all_images
 from app.utils.path_tool import get_abstract_path
 
@@ -87,6 +88,7 @@ class VectorStoreService:
             collection_name=chroma_config['collection_name'],
             embedding_function=self._get_embed_model(),
             persist_directory=persist_dir,
+            collection_metadata=chroma_collection_metadata(chroma_config),
         )
         self.md5_store = MD5Store()
         self.hybrid_retriever = HybridRetriever(self.vectors_store)

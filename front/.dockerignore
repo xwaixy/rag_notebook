@@ -1,3 +1,10 @@
-node_modules
-dist
+.git
+.gitignore
 .env
+.env.*
+node_modules/
+dist/
+.vite/
+coverage/
+npm-debug.log*
+pnpm-debug.log*

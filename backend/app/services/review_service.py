@@ -1,7 +1,6 @@
 """
 回顾服务层 —— 艾宾浩斯间隔重复算法 + 回顾问题生成。
 """
-import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
@@ -10,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logger_handler import logger
 from app.models.note import Note
 from app.models.review_record import ReviewRecord
+from app.utils.review_question import build_fallback_review_questions, normalize_review_questions_payload
 
 # 艾宾浩斯间隔重复数组（天）
 INTERVALS = [1, 2, 4, 7, 15, 30]
@@ -110,10 +110,31 @@ class ReviewService:
             "next_review_at": str(next_at),
         }
 
-    async def generate_review_question(self, content: str) -> dict:
+    def _with_primary_question(self, payload: dict) -> dict:
         """
-        调用 LLM 根据笔记内容生成回顾选择题。
-        返回 {question, choices, answer} 结构。
+        多题接口兼容旧前端字段：保留 questions，同时展开第一题。
+        """
+        questions = payload.get("questions") or []
+        if not questions:
+            return {
+                "questions": [],
+                "question": "暂无可用回顾题",
+                "choices": [],
+                "answer": "",
+            }
+
+        first = questions[0]
+        return {
+            "questions": questions,
+            "question": first["question"],
+            "choices": first["choices"],
+            "answer": first["answer"],
+        }
+
+    async def generate_review_question(self, content: str, title: str = "") -> dict:
+        """
+        调用 LLM 根据笔记内容生成至少 5 道回顾选择题。
+        返回 {questions, question, choices, answer} 结构，其中单题字段用于兼容旧调用方。
         """
         raw = ""
         try:
@@ -124,35 +145,14 @@ class ReviewService:
 
             chat_model = init_manager.chat_model
             prompt_template = load_prompt("review_question_prompt")
-            prompt = prompt_template.format(content=content[:2000])
+            prompt = prompt_template.format(title=title, content=content[:2000])
             response = await chat_model.ainvoke([HumanMessage(content=prompt)])
-            raw = response.content.strip()
-            logger.debug(f"LLM 原始响应: {raw[:500]}")
-
-            # 尝试从 markdown 代码块中提取 JSON
-            if "```json" in raw:
-                raw = raw.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw:
-                raw = raw.split("```")[1].split("```")[0].strip()
-            # 如果还有前置文本，找到第一个 { 开始解析
-            brace_start = raw.find("{")
-            if brace_start > 0:
-                raw = raw[brace_start:]
-            data = json.loads(raw)
-            logger.debug(f"解析后的JSON: {data}")
-
-            return {
-                "question": data["question"],
-                "choices": data["choices"],
-                "answer": data["answer"],
-            }
+            raw = response.content
+            logger.debug(f"LLM 原始响应: {str(raw)[:500]}")
+            return self._with_primary_question(normalize_review_questions_payload(raw))
         except Exception as e:
-            logger.error(f"生成回顾问题失败: {e} | raw={raw[:300]}")
-            return {
-                "question": "请回顾这篇笔记的主要内容",
-                "choices": ["不太确定", "需要复习", "基本掌握", "完全理解"],
-                "answer": "基本掌握",
-            }
+            logger.error(f"生成回顾问题失败: {e} | raw={str(raw)[:300]}")
+            return self._with_primary_question(build_fallback_review_questions(title, content))
 
     async def get_review_question_for_note(
         self, db: AsyncSession, note_id: str, user_id: str
@@ -166,11 +166,12 @@ class ReviewService:
         note = result.scalar_one_or_none()
         if not note:
             return {
+                "questions": [],
                 "question": "笔记不存在",
                 "choices": [],
                 "answer": "",
             }
-        return await self.generate_review_question(note.content or "")
+        return await self.generate_review_question(note.content or "", note.title or "")
 
 
 review_service = ReviewService()

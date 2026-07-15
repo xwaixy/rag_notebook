@@ -8,10 +8,6 @@ from langchain_community.chat_models import ChatTongyi
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import BaseTool
-<<<<<<< Updated upstream
-from langchain_ollama import ChatOllama
-=======
->>>>>>> Stashed changes
 from langsmith import traceable
 
 from app.agent.agent_middleware import get_middleware
@@ -31,6 +27,7 @@ from app.agent.agent_tools import (
 from app.core.logger_handler import logger
 from app.services import session_manager as sm
 from app.utils.prompt_loader import load_prompt
+from app.utils.response_text import extract_response_text
 
 
 class AgentFactory:
@@ -282,7 +279,9 @@ async def get_agent_response(
             "retrieval_context": retrieval_context
         }):
             if "output" in chunk:
-                full_response.append(chunk["output"])
+                text = extract_response_text(chunk["output"])
+                if text:
+                    full_response.append(text)
             elif "intermediate_steps" in chunk:
                 for action, observation in chunk["intermediate_steps"]:
                     # 记录日志
@@ -365,7 +364,9 @@ async def get_agent_stream_response(
                 "retrieval_context": retrieval_context
             }):
                 if "output" in chunk:
-                    full_response.append(chunk["output"])
+                    text = extract_response_text(chunk["output"])
+                    if text:
+                        full_response.append(text)
                 elif "intermediate_steps" in chunk:
                     for action, observation in chunk["intermediate_steps"]:
                         logger.info(f"\n\n🧠 [Agent 思考] {action.log}")

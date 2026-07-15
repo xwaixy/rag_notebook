@@ -11,68 +11,43 @@ export default defineConfig({
     port: 3000,
     host: true, // 允许局域网访问
     proxy: {
-      // AI相关接口代理到8000端口
-      '/api/agent': {
+      // 后端接口统一走 /api 前缀，避免和前端页面路由冲突。
+      '/api/chat': {
         target: BACKEND_TARGET,
         changeOrigin: true,
-        ws: true
+        ws: true,
+        rewrite: (path) => path.replace(/^\/api\/chat/, '/chat')
       },
-      '/api/rag': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
-      },
-      '/api/session': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
-      },
-      '/knowledge/': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
-      },
-      // chat API 子路径代理（避免匹配前端的 /chat 页面路由）
-      '/chat/agent/': {
+      '/api/knowledge': {
         target: BACKEND_TARGET,
         changeOrigin: true,
-        ws: true
+        rewrite: (path) => path.replace(/^\/api\/knowledge/, '/knowledge')
       },
-      '/chat/rag/': {
+      '/api/note': {
         target: BACKEND_TARGET,
-        changeOrigin: true
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/note/, '/note')
       },
-      '/chat/session/': {
+      '/api/review': {
         target: BACKEND_TARGET,
-        changeOrigin: true
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/review/, '/review')
       },
-      '/chat/sessions': {
+      '/api/health': {
         target: BACKEND_TARGET,
-        changeOrigin: true
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/health/, '/health')
       },
-      '/chat/reorder': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
-      },
-      '/health': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
-      },
-      // 用户相关接口代理到8001端口
-      '/user': {
+      // 用户与文件服务代理到 Django。
+      '/api/user': {
         target: USER_TARGET,
-        changeOrigin: true
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/user/, '/user')
       },
-      '/file': {
+      '/api/file': {
         target: USER_TARGET,
-        changeOrigin: true
-      },
-      // 笔记相关接口代理（加尾部斜杠避免匹配 /notes 页面路由）
-      '/note/': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
-      },
-      // 回顾相关接口代理
-      '/review/': {
-        target: BACKEND_TARGET,
-        changeOrigin: true
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/file/, '/file')
       }
     }
   }

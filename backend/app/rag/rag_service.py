@@ -9,6 +9,13 @@ from app.core.background_init import init_manager
 from app.core.logger_handler import logger
 from app.rag.vector_store import VectorStoreService
 from app.utils.prompt_loader import load_prompt
+from app.utils.rag_query import (
+    document_relevance_components,
+    document_relevance_score,
+    filter_documents_by_relevance,
+    rank_documents_by_query,
+)
+from app.utils.related_notes import distance_to_similarity
 
 
 def _env_int(name: str, default: int) -> int:
@@ -47,9 +54,9 @@ class RagService:
         self.thinking_callback = thinking_callback
         self.hyde_timeout = _env_float("HYDE_TIMEOUT_SECONDS", 8.0)
         self.hyde_max_chars = _env_int("HYDE_MAX_CHARS", 160)
-        self.original_vector_k = _env_int("RAG_ORIGINAL_VECTOR_K", 3)
-        self.note_k = _env_int("RAG_NOTE_K", 2)
-        self.hyde_k = _env_int("RAG_HYDE_K", 3)
+        self.original_vector_k = _env_int("RAG_ORIGINAL_VECTOR_K", 10)
+        self.note_k = _env_int("RAG_NOTE_K", 5)
+        self.hyde_k = _env_int("RAG_HYDE_K", 10)
         self.summary_mode = os.getenv("RAG_SUMMARY_MODE", "fast").lower()
         self.summary_doc_count = _env_int("RAG_SUMMARY_DOC_COUNT", 3)
         self.summary_doc_chars = _env_int("RAG_SUMMARY_DOC_CHARS", 700)
@@ -154,8 +161,8 @@ class RagService:
             # 只用 HyDE 容易在假设回答猜错时发生查询漂移，例如把“喜欢什么动物”猜成“喜欢猫”，
             # 从而错过原始问题能直接命中的用户资料。
             logger.info("【HyDE】使用原始问题进行检索")
-            original_vector_documents = await asyncio.to_thread(
-                self.vector_store.vectors_store.similarity_search,
+            original_vector_results = await asyncio.to_thread(
+                self.vector_store.vectors_store.similarity_search_with_score,
                 query, k=self.original_vector_k,
                 filter={"user_id": self.user_id}
             )
@@ -163,17 +170,25 @@ class RagService:
 
             original_note_docs = []
             try:
-                original_note_docs = await asyncio.to_thread(
-                    self.note_service.notes_store.similarity_search,
+                original_note_results = await asyncio.to_thread(
+                    self.note_service.notes_store.similarity_search_with_score,
                     query, k=self.note_k,
                     filter={"user_id": self.user_id}
                 )
+                for doc, score in original_note_results:
+                    doc.metadata["vector_distance"] = score
+                    doc.metadata["vector_similarity"] = distance_to_similarity(score)
+                    original_note_docs.append(doc)
             except Exception as e:
                 logger.error(f"【RAG】使用原始问题检索笔记失败: {e}")
 
-            for doc in original_vector_documents:
+            original_vector_documents = []
+            for doc, score in original_vector_results:
                 doc.metadata["source_type"] = "knowledge_base"
                 doc.metadata["retrieval_source"] = "original_vector_query"
+                doc.metadata["vector_distance"] = score
+                doc.metadata["vector_similarity"] = distance_to_similarity(score)
+                original_vector_documents.append(doc)
             for doc in original_documents:
                 doc.metadata["source_type"] = "knowledge_base"
                 doc.metadata["retrieval_source"] = "original_query"
@@ -193,20 +208,37 @@ class RagService:
                     "content": "正在向量数据库中检索相关文档..."
                 })
 
+            hyde_vector_results = await asyncio.to_thread(
+                self.vector_store.vectors_store.similarity_search_with_score,
+                hypothetical_doc,
+                k=self.hyde_k,
+                filter={"user_id": self.user_id}
+            )
+            hyde_vector_documents = []
             documents = (await self.retriever.ainvoke(hypothetical_doc))[:self.hyde_k]
 
             # 同时检索笔记库
             note_docs = []
             try:
-                note_docs = await asyncio.to_thread(
-                    self.note_service.notes_store.similarity_search,
+                note_results = await asyncio.to_thread(
+                    self.note_service.notes_store.similarity_search_with_score,
                     hypothetical_doc, k=self.note_k,
                     filter={"user_id": self.user_id}
                 )
+                for doc, score in note_results:
+                    doc.metadata["vector_distance"] = score
+                    doc.metadata["vector_similarity"] = distance_to_similarity(score)
+                    note_docs.append(doc)
             except Exception as e:
                 logger.error(f"【RAG】检索笔记失败: {e}")
 
             # 标记来源并合并（笔记在前，知识库在后）
+            for doc, score in hyde_vector_results:
+                doc.metadata["source_type"] = "knowledge_base"
+                doc.metadata["retrieval_source"] = "hyde_vector_query"
+                doc.metadata["vector_distance"] = score
+                doc.metadata["vector_similarity"] = distance_to_similarity(score)
+                hyde_vector_documents.append(doc)
             for doc in documents:
                 doc.metadata["source_type"] = "knowledge_base"
                 doc.metadata["retrieval_source"] = "hyde"
@@ -214,49 +246,79 @@ class RagService:
                 doc.metadata["source_type"] = "note"
                 doc.metadata["retrieval_source"] = "hyde"
 
-            # 原始问题命中的文档优先，HyDE 结果补充召回；按内容和来源去重。
-            seen = set()
-            all_documents = []
-            for doc in original_all_documents + note_docs + documents:
+            # 原始问题命中的文档优先，HyDE 结果补充召回；同一文档重复命中时保留更高相关分。
+            best_documents = {}
+            for doc in original_all_documents + note_docs + hyde_vector_documents + documents:
                 key = (
                     doc.metadata.get("source_type"),
                     doc.metadata.get("original_filename") or doc.metadata.get("title") or doc.metadata.get("source"),
                     doc.page_content[:200],
                 )
-                if key in seen:
+                retrieval_source = doc.metadata.get("retrieval_source")
+                existing = best_documents.get(key)
+                if existing is None:
+                    doc.metadata["retrieval_sources"] = [retrieval_source] if retrieval_source else []
+                    best_documents[key] = doc
                     continue
-                seen.add(key)
-                all_documents.append(doc)
+
+                sources = set(existing.metadata.get("retrieval_sources") or [])
+                if existing.metadata.get("retrieval_source"):
+                    sources.add(existing.metadata["retrieval_source"])
+                if retrieval_source:
+                    sources.add(retrieval_source)
+
+                existing_score = document_relevance_score(query, existing, auxiliary_query=hypothetical_doc)
+                candidate_score = document_relevance_score(query, doc, auxiliary_query=hypothetical_doc)
+                chosen = doc if candidate_score > existing_score else existing
+                chosen.metadata["retrieval_sources"] = sorted(sources)
+                best_documents[key] = chosen
+
+            all_documents = list(best_documents.values())
+
+            filtered_documents = filter_documents_by_relevance(query, all_documents, auxiliary_query=hypothetical_doc)
+            ranked_documents = rank_documents_by_query(query, filtered_documents, auxiliary_query=hypothetical_doc)
 
             logger.info(
                 f"【HyDE】原始问题检索到 {len(original_documents)} 个知识库文档, {len(original_note_docs)} 个笔记文档；"
                 f"假设性文档检索到 {len(documents)} 个知识库文档, {len(note_docs)} 个笔记文档；"
-                f"合并后 {len(all_documents)} 个文档"
+                f"合并后 {len(all_documents)} 个文档，规则过滤后 {len(ranked_documents)} 个文档"
             )
 
             if self.thinking_callback:
                 doc_previews = []
-                for i, doc in enumerate(all_documents, 1):
+                for i, doc in enumerate(ranked_documents, 1):
                     preview = doc.page_content[:150] + "..." if len(doc.page_content) > 150 else doc.page_content
                     if doc.metadata.get("source_type") == "note":
                         source = f"笔记《{doc.metadata.get('title', '无标题')}》"
                     else:
                         source = doc.metadata.get("original_filename", doc.metadata.get("source", "unknown"))
+                    score_parts = document_relevance_components(query, doc, auxiliary_query=hypothetical_doc)
+                    final_score = score_parts["final_score"]
                     doc_previews.append({
                         "index": i,
                         "preview": preview,
                         "source": source,
+                        "vector_distance": doc.metadata.get("vector_distance"),
+                        "vector_similarity": doc.metadata.get("vector_similarity"),
+                        "vector_score": score_parts["vector_score"],
+                        "lexical_score": score_parts["lexical_score"],
+                        "metadata_score": score_parts["metadata_score"],
+                        "literal_score": score_parts["literal_score"],
+                        "final_score": final_score,
+                        "score": final_score,
+                        "retrieval_source": doc.metadata.get("retrieval_source"),
+                        "retrieval_sources": doc.metadata.get("retrieval_sources"),
                     })
                 await self.thinking_callback({
                     "type": "thinking",
                     "stage": "retrieval",
-                    "content": f"检索到 {len(note_docs)} 篇相关笔记, {len(documents)} 篇知识库文档",
+                    "content": f"检索到 {len(ranked_documents)} 个通过相关性过滤的文档",
                     "details": {
                         "documents": doc_previews
                     }
                 })
 
-            return all_documents
+            return ranked_documents
         except Exception as e:
             logger.error(f"【HyDE】检索文档失败: {e}")
             return []

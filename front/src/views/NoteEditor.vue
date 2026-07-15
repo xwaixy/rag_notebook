@@ -21,9 +21,37 @@
           placeholder="输入笔记标题..."
           maxlength="200"
         />
-        <div v-if="tags.length > 0 || category" class="title-meta">
+        <div class="title-meta">
           <span v-if="category" class="title-category">{{ categoryMap[category] || category }}</span>
-          <TagBadge v-for="t in tags" :key="t" :tag="t" :color="getCategoryColor(category)" />
+          <span
+            v-for="t in tags"
+            :key="t"
+            class="editable-tag"
+          >
+            <span>{{ t }}</span>
+            <button type="button" class="tag-remove-btn" aria-label="删除标签" @click.stop="removeTag(t)">×</button>
+          </span>
+          <span v-if="addingTag" class="tag-input-shell">
+            <input
+              ref="tagInputRef"
+              v-model="newTag"
+              class="tag-input"
+              placeholder="输入标签"
+              maxlength="20"
+              @keydown.enter.prevent="confirmAddTag"
+              @keydown.esc.prevent="cancelAddTag"
+              @blur="confirmAddTag"
+            />
+          </span>
+          <button
+            v-else-if="tags.length < maxTags"
+            type="button"
+            class="add-tag-btn"
+            @click="startAddTag"
+          >
+            + 标签
+          </button>
+          <span v-else class="tag-limit-hint">最多 {{ maxTags }} 个标签</span>
         </div>
       </div>
 
@@ -107,7 +135,7 @@
                 <span class="related-source" :class="item.source === 'note' ? 'src-note' : 'src-kb'">
                   {{ item.source === 'note' ? '笔记' : '知识库' }}
                 </span>
-                <span class="related-similarity">{{ (item.similarity * 100).toFixed(0) }}%</span>
+                <span class="related-similarity">{{ formatSimilarityPercent(item.similarity, 0) }}</span>
               </div>
               <h4 class="related-card-title ellipsis">{{ item.title }}</h4>
               <p class="related-card-preview">{{ item.content_preview }}</p>
@@ -124,13 +152,13 @@
  * NoteEditor 笔记编辑器 —— 双栏布局，右侧关联推荐可折叠。
  * 支持内容变化后自动刷新关联推荐（防抖 3 秒）。
  */
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast, showConfirmDialog } from 'vant'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { apiConfig } from '../config/api'
-import { useUserStore } from '../store/user'
+import { getAuthHeaders } from '../utils/auth'
 import MarkdownEditor from '../components/MarkdownEditor.vue'
 import QuickToolbar from '../components/QuickToolbar.vue'
 import TagBadge from '../components/TagBadge.vue'
@@ -138,7 +166,6 @@ import InlineCompletion from '../components/InlineCompletion.vue'
 
 const route = useRoute()
 const router = useRouter()
-const userStore = useUserStore()
 
 /** ---- 编辑器引用 ---- */
 const markdownEditorRef = ref(null)
@@ -155,6 +182,10 @@ const tags = ref([])
 const category = ref('')
 const saving = ref(false)
 const noteId = ref('')
+const tagInputRef = ref(null)
+const newTag = ref('')
+const addingTag = ref(false)
+const maxTags = 5
 
 /** ---- 侧边栏状态 ---- */
 const sidebarVisible = ref(false)
@@ -172,12 +203,8 @@ const isNew = computed(() => route.params.id === 'new')
 /** 分类映射 */
 const categoryMap = { work: '工作', study: '学习', life: '生活', project: '项目' }
 
-const token = computed(() => userStore.token)
 function getHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token.value}`,
-  }
+  return getAuthHeaders({ 'Content-Type': 'application/json' })
 }
 
 let autoSaveTimer = null
@@ -185,6 +212,65 @@ let autoSaveTimer = null
 function getCategoryColor(cat) {
   const map = { work: 'work', study: 'study', life: 'life', project: 'project' }
   return map[cat] || 'default'
+}
+
+function normalizeTagList(values) {
+  const normalized = []
+  for (const value of values || []) {
+    const tag = String(value || '').trim()
+    if (tag && !normalized.includes(tag)) {
+      normalized.push(tag)
+    }
+    if (normalized.length >= maxTags) break
+  }
+  return normalized
+}
+
+function formatSimilarityPercent(value, fractionDigits = 0) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '0%'
+  const clamped = Math.min(1, Math.max(0, numeric))
+  return `${(clamped * 100).toFixed(fractionDigits)}%`
+}
+
+function startAddTag() {
+  if (tags.value.length >= maxTags) {
+    showToast(`最多添加 ${maxTags} 个标签`)
+    return
+  }
+  newTag.value = ''
+  addingTag.value = true
+  nextTick(() => tagInputRef.value?.focus())
+}
+
+function cancelAddTag() {
+  newTag.value = ''
+  addingTag.value = false
+}
+
+function confirmAddTag() {
+  if (!addingTag.value) return
+  const tag = newTag.value.trim()
+  if (!tag) {
+    cancelAddTag()
+    return
+  }
+  if (tags.value.includes(tag)) {
+    showToast('标签已存在')
+    cancelAddTag()
+    return
+  }
+  if (tags.value.length >= maxTags) {
+    showToast(`最多添加 ${maxTags} 个标签`)
+    cancelAddTag()
+    return
+  }
+  tags.value = [...tags.value, tag]
+  cancelAddTag()
+}
+
+function removeTag(tag) {
+  tags.value = tags.value.filter(t => t !== tag)
 }
 
 /** 切换侧边栏展开/折叠 */
@@ -240,6 +326,7 @@ function autoSaveDraft() {
     localStorage.setItem('note_draft', JSON.stringify({
       title: title.value,
       content: content.value,
+      tags: tags.value,
       noteId: noteId.value,
       timestamp: Date.now(),
     }))
@@ -304,12 +391,14 @@ async function handleSave() {
   }
 
   saving.value = true
+  const normalizedTags = normalizeTagList(tags.value)
+  tags.value = normalizedTags
   try {
     if (isNew.value) {
       const res = await fetch(apiConfig.endpoints.noteCreate, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ title: title.value, content: content.value }),
+        body: JSON.stringify({ title: title.value, content: content.value, tags: normalizedTags }),
       })
       const json = await res.json()
       if (json.code === 200) {
@@ -323,7 +412,7 @@ async function handleSave() {
       const res = await fetch(apiConfig.endpoints.noteUpdate(noteId.value), {
         method: 'PUT',
         headers: getHeaders(),
-        body: JSON.stringify({ title: title.value, content: content.value }),
+        body: JSON.stringify({ title: title.value, content: content.value, tags: normalizedTags }),
       })
       const json = await res.json()
       if (json.code === 200) {
@@ -364,7 +453,7 @@ async function handleDelete() {
 async function handleDownload() {
   try {
     const res = await fetch(apiConfig.endpoints.noteDownload(noteId.value), {
-      headers: { 'Authorization': `Bearer ${token.value}` },
+      headers: getAuthHeaders(),
     })
     const contentType = res.headers.get('content-type') || ''
     if (contentType.includes('application/json')) {
@@ -404,8 +493,8 @@ function goBack() {
   router.push('/notes')
 }
 
-/** 监听内容变化：触发自动保存草稿 + 防抖刷新关联推荐 */
-watch([title, content], () => {
+/** 监听标题、内容和标签变化：触发自动保存草稿 + 防抖刷新关联推荐 */
+watch([title, content, tags], () => {
   autoSaveDraft()
   scheduleRelatedRefresh()
 })
@@ -568,6 +657,67 @@ onUnmounted(() => {
   padding: 2px 8px;
   background: #f0f0f0;
   border-radius: 4px;
+}
+.editable-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 8px;
+  border-radius: 4px;
+  background: #FEF7E0;
+  color: #B06000;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.tag-remove-btn {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #B06000;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 16px;
+  padding: 0;
+}
+.tag-remove-btn:hover {
+  background: rgba(176, 96, 0, 0.12);
+}
+.add-tag-btn {
+  border: 1px dashed var(--van-primary-color, #D4914A);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--van-primary-color, #D4914A);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 2px 8px;
+}
+.add-tag-btn:hover {
+  background: #fff7ed;
+}
+.tag-input-shell {
+  display: inline-flex;
+  align-items: center;
+}
+.tag-input {
+  width: 96px;
+  border: 1px solid var(--van-primary-color, #D4914A);
+  border-radius: 4px;
+  color: #333;
+  font-size: 12px;
+  line-height: 1.5;
+  outline: none;
+  padding: 2px 8px;
+}
+.tag-input::placeholder {
+  color: #bbb;
+}
+.tag-limit-hint {
+  color: #bbb;
+  font-size: 12px;
 }
 
 /* 编辑器主体 */

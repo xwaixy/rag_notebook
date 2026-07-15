@@ -1,4 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { showToast } from 'vant'
+import { getLoginRedirect, isAuthenticated } from '../utils/auth'
+
+const authMeta = { requiresAuth: true }
 
 const routes = [
   {
@@ -29,7 +33,8 @@ const routes = [
     component: () => import('../views/AIChat.vue'),
     meta: {
       title: 'AI助手',
-      keepAlive: true
+      keepAlive: true,
+      ...authMeta,
     }
   },
   {
@@ -38,7 +43,8 @@ const routes = [
     component: () => import('../views/AIChat.vue'),
     meta: {
       title: 'AI助手',
-      keepAlive: true
+      keepAlive: true,
+      ...authMeta,
     }
   },
   // 兼容旧路由
@@ -65,7 +71,8 @@ const routes = [
     component: () => import('../views/Profile.vue'),
     meta: {
       title: '个人信息',
-      keepAlive: false
+      keepAlive: false,
+      ...authMeta,
     }
   },
   {
@@ -74,7 +81,8 @@ const routes = [
     component: () => import('../views/Settings.vue'),
     meta: {
       title: '设置',
-      keepAlive: false
+      keepAlive: false,
+      ...authMeta,
     }
   },
   {
@@ -92,7 +100,8 @@ const routes = [
     component: () => import('../views/KnowledgeBase.vue'),
     meta: {
       title: '知识库管理',
-      keepAlive: false
+      keepAlive: false,
+      ...authMeta,
     }
   },
   // 兼容旧路由
@@ -106,7 +115,8 @@ const routes = [
     component: () => import('../views/Sessions.vue'),
     meta: {
       title: '会话管理',
-      keepAlive: true
+      keepAlive: true,
+      ...authMeta,
     }
   },
   {
@@ -115,7 +125,8 @@ const routes = [
     component: () => import('../views/NoteList.vue'),
     meta: {
       title: '笔记',
-      keepAlive: true
+      keepAlive: true,
+      ...authMeta,
     }
   },
   {
@@ -124,7 +135,8 @@ const routes = [
     component: () => import('../views/NoteEditor.vue'),
     meta: {
       title: '编辑笔记',
-      keepAlive: false
+      keepAlive: false,
+      ...authMeta,
     }
   },
   {
@@ -133,7 +145,8 @@ const routes = [
     component: () => import('../views/DailyReview.vue'),
     meta: {
       title: '每日回顾',
-      keepAlive: false
+      keepAlive: false,
+      ...authMeta,
     }
   },
 ]
@@ -148,7 +161,12 @@ router.beforeEach((to, from, next) => {
   // 设置页面标题
   document.title = to.meta.title || 'AI Second Brain'
 
-  // 直接允许访问所有页面
+  if (to.matched.some((record) => record.meta.requiresAuth) && !isAuthenticated()) {
+    showToast('请先登录')
+    next(getLoginRedirect(to.fullPath))
+    return
+  }
+
   next()
 })
 

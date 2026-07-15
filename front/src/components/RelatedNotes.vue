@@ -12,7 +12,7 @@
             <span class="source-badge" :class="item.source === 'note' ? 'source-note' : 'source-kb'">
               {{ item.source === 'note' ? '笔记' : '知识库' }}
             </span>
-            <span class="similarity">{{ (item.similarity * 100).toFixed(1) }}%</span>
+            <span class="similarity">{{ formatSimilarityPercent(item.similarity, 1) }}</span>
           </div>
           <h4 class="related-title ellipsis">{{ item.title }}</h4>
           <p class="related-preview">{{ item.content_preview }}</p>
@@ -28,7 +28,7 @@
  */
 import { ref, watch } from 'vue'
 import { apiConfig } from '../config/api'
-import { useUserStore } from '../store/user'
+import { getAuthHeaders } from '../utils/auth'
 
 const props = defineProps({
   noteId: { type: String, default: '' },
@@ -37,7 +37,6 @@ const props = defineProps({
 
 const emit = defineEmits(['update:show'])
 
-const userStore = useUserStore()
 const visible = ref(false)
 const loading = ref(false)
 const items = ref([])
@@ -56,10 +55,14 @@ watch(visible, (val) => {
 
 /** 请求头 */
 function getHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${userStore.token}`,
-  }
+  return getAuthHeaders({ 'Content-Type': 'application/json' })
+}
+
+function formatSimilarityPercent(value, fractionDigits = 1) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return '0%'
+  const clamped = Math.min(1, Math.max(0, numeric))
+  return `${(clamped * 100).toFixed(fractionDigits)}%`
 }
 
 /** 取关联推荐 */

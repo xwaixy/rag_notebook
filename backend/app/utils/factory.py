@@ -13,112 +13,12 @@ from app.core.logger_handler import logger
 load_dotenv()
 
 
-def normalize_openai_proxy_env() -> None:
-    """兼容部分代理软件导出的 socks:// 地址格式。"""
-    proxy_keys = (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    )
-    for key in proxy_keys:
-        value = os.getenv(key)
-        if value and value.lower().startswith("socks://"):
-            os.environ[key] = f"socks5://{value[len('socks://'):]}"
-
-
-def _env_bool(key: str, default: bool = False) -> bool:
-    value = os.getenv(key)
+def _env_bool(name: str, default: bool = False) -> bool:
+    """读取布尔环境变量，兼容 true/1/yes/on。"""
+    value = os.getenv(name)
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _apply_openai_compat_headers(request) -> None:
-    request.headers["User-Agent"] = os.getenv("OPENAI_USER_AGENT", "curl/8.0.0")
-
-
-async def _async_apply_openai_compat_headers(request) -> None:
-    _apply_openai_compat_headers(request)
-
-
-def create_openai_chat_model(model_name: str, streaming: bool = True) -> BaseChatModel:
-    """根据项目环境变量创建 OpenAI 兼容聊天模型。"""
-    import httpx
-    from langchain_openai import ChatOpenAI
-
-    normalize_openai_proxy_env()
-    trust_env = _env_bool("OPENAI_TRUST_ENV", False)
-
-    kwargs = {
-        "model": model_name,
-        "api_key": os.getenv("OPENAI_API_KEY"),
-        "base_url": os.getenv("OPENAI_BASE_URL") or None,
-        "streaming": streaming,
-        "http_client": httpx.Client(
-            event_hooks={"request": [_apply_openai_compat_headers]},
-            trust_env=trust_env,
-        ),
-        "http_async_client": httpx.AsyncClient(
-            event_hooks={"request": [_async_apply_openai_compat_headers]},
-            trust_env=trust_env,
-        ),
-    }
-
-    use_responses_api = _env_bool("OPENAI_USE_RESPONSES_API")
-    if use_responses_api:
-        kwargs["use_responses_api"] = True
-
-        reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT")
-        if reasoning_effort:
-            kwargs["reasoning_effort"] = reasoning_effort
-
-        if _env_bool("OPENAI_DISABLE_RESPONSE_STORAGE"):
-            kwargs["store"] = False
-
-    return ChatOpenAI(**kwargs)
-
-
-class DashScopeEmbeddingsWrapper(Embeddings):
-    """阿里云DashScope嵌入模型封装"""
-
-    def __init__(self, model_name: str = "qwen3-embedding", api_key: str = None):
-        try:
-            import dashscope
-            self.dashscope = dashscope
-            self.dashscope.api_key = api_key or os.getenv("ALIYUN_ACCESS_KEY_SECRET")
-            self.model_name = model_name
-        except ImportError:
-            raise ImportError("需要安装 dashscope 库: pip install dashscope")
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """批量嵌入文档"""
-        results = []
-        for text in texts:
-            resp = self.dashscope.TextEmbedding.call(
-                model=self.model_name,
-                input=text
-            )
-            if resp.status_code == 200:
-                results.append(resp.output['embeddings'][0]['embedding'])
-            else:
-                logger.error(f"阿里云嵌入调用失败: {resp.message}")
-                results.append([])
-        return results
-
-    def embed_query(self, text: str) -> list[float]:
-        """嵌入单个查询"""
-        resp = self.dashscope.TextEmbedding.call(
-            model=self.model_name,
-            input=text
-        )
-        if resp.status_code == 200:
-            return resp.output['embeddings'][0]['embedding']
-        else:
-            logger.error(f"阿里云嵌入调用失败: {resp.message}")
-            return []
 
 
 class LocalQwenEmbeddingsWrapper(Embeddings):
@@ -128,34 +28,15 @@ class LocalQwenEmbeddingsWrapper(Embeddings):
         try:
             from sentence_transformers import SentenceTransformer
 
-            if device == "cuda":
-                try:
-                    import torch
-
-                    if not torch.cuda.is_available():
-                        logger.warning("本地Qwen嵌入模型请求使用cuda，但当前环境不可用，自动降级为cpu")
-                        device = "cpu"
-                except ImportError:
-                    logger.warning("未安装torch，无法检查cuda状态，本地Qwen嵌入模型自动降级为cpu")
-                    device = "cpu"
-
             kwargs = {}
             if device:
                 kwargs["device"] = device
 
-            try:
-                self.model = SentenceTransformer(model_path, **kwargs)
-            except RuntimeError as e:
-                if device == "cuda" and "out of memory" in str(e).lower():
-                    logger.warning("本地Qwen嵌入模型加载到cuda时显存不足，自动降级为cpu")
-                    self.model = SentenceTransformer(model_path, device="cpu")
-                else:
-                    raise
+            self.model = SentenceTransformer(model_path, **kwargs)
         except ImportError:
-            raise ImportError("需要安装 sentence-transformers 库: pip install sentence-transformers")
+            raise ImportError("需要安装 sentence-transformers: pip install sentence-transformers")
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """批量嵌入文档"""
         embeddings = self.model.encode(
             texts,
             normalize_embeddings=True,
@@ -164,8 +45,33 @@ class LocalQwenEmbeddingsWrapper(Embeddings):
         return embeddings.tolist()
 
     def embed_query(self, text: str) -> list[float]:
-        """嵌入单个查询"""
         return self.embed_documents([text])[0]
+
+
+class DashScopeEmbeddingsWrapper(Embeddings):
+    """阿里云 DashScope OpenAI 兼容 Embedding 模型封装"""
+
+    def __init__(self, model_name: str, api_key: str | None = None, base_url: str | None = None):
+        try:
+            from langchain_openai import OpenAIEmbeddings
+        except ImportError as exc:
+            raise ImportError("需要安装 langchain-openai: pip install langchain-openai") from exc
+
+        kwargs = {
+            "model": model_name,
+            "base_url": base_url or os.getenv("ALIYUN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            "check_embedding_ctx_length": False,
+        }
+        if api_key:
+            kwargs["api_key"] = api_key
+
+        self.model = OpenAIEmbeddings(**kwargs)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.model.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.model.embed_query(text)
 
 
 class BaseModelFactory(ABC):
@@ -177,14 +83,59 @@ class BaseModelFactory(ABC):
         pass
 
 
+def create_openai_chat_model(
+        model_name: str | None = None,
+        streaming: bool = True,
+        **kwargs,
+) -> BaseChatModel:
+    """创建 OpenAI 兼容聊天模型，供后台初始化和 Agent 复用。"""
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:
+        raise ImportError("需要安装 langchain-openai: pip install langchain-openai") from exc
+
+    resolved_model_name = model_name or os.getenv("OPENAI_MODEL_NAME", "gpt-5.5")
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL") or None
+    use_responses_api = _env_bool("OPENAI_USE_RESPONSES_API", False)
+    reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT") or None
+    disable_response_storage = _env_bool("OPENAI_DISABLE_RESPONSE_STORAGE", False)
+    user_agent = os.getenv("OPENAI_USER_AGENT") or None
+    trust_env = _env_bool("OPENAI_TRUST_ENV", True)
+
+    model_kwargs = {
+        "model": resolved_model_name,
+        "api_key": api_key,
+        "base_url": base_url,
+        "streaming": streaming,
+        "use_responses_api": use_responses_api,
+    }
+    if reasoning_effort:
+        model_kwargs["reasoning_effort"] = reasoning_effort
+    if disable_response_storage:
+        model_kwargs["store"] = False
+    if user_agent:
+        model_kwargs["default_headers"] = {"User-Agent": user_agent}
+    if not trust_env and "http_client" not in kwargs and "http_async_client" not in kwargs:
+        import httpx
+
+        model_kwargs["http_client"] = httpx.Client(trust_env=False)
+        model_kwargs["http_async_client"] = httpx.AsyncClient(trust_env=False)
+    model_kwargs.update(kwargs)
+
+    return ChatOpenAI(**model_kwargs)
+
+
 class ChatModelFactory(BaseModelFactory):
-    """聊天模型工厂 - 支持阿里云百炼、Ollama 和 OpenAI"""
+    """聊天模型工厂 - 支持阿里云百炼和Ollama"""
 
     def generator(self) -> Embeddings | BaseChatModel | None:
         """根据LLM_TYPE生成对应的聊天模型"""
         llm_type = os.getenv("LLM_TYPE", "ALIYUN").upper()
 
         if llm_type == "OLLAMA":
+            from langchain_ollama import ChatOllama
+
             model_name = os.getenv("OLLAMA_MODEL_NAME", os.getenv("OLLAMA_CHAT_MODEL_NAME", "qwen3:7b"))
             base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -211,25 +162,30 @@ class ChatModelFactory(BaseModelFactory):
                 streaming=True,
                 top_p=0.7,
             )
-
+        
         elif llm_type == "OPENAI":
             model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-5.5")
 
             logger.info(f"📦 ChatModel 使用OpenAI模型: {model_name}")
 
-            return create_openai_chat_model(model_name=model_name, streaming=True)
+            return create_openai_chat_model(
+                model_name=model_name,
+                streaming=True,
+            )
 
         else:
             raise ValueError(f"不支持的LLM_TYPE: {llm_type}，可选值: ALIYUN, OLLAMA, OPENAI")
 
 
 class EmbedModelFactory(BaseModelFactory):
-    """嵌入模型工厂 - 支持Ollama、阿里云百炼和本地Qwen"""
+    """嵌入模型工厂 - 支持Ollama和阿里云百炼"""
     def generator(self) -> Embeddings | BaseChatModel | None:
         """根据EMBED_MODEL_TYPE生成对应的嵌入模型"""
         embed_type = os.getenv("EMBED_MODEL_TYPE", "OLLAMA").upper()
 
         if embed_type == "OLLAMA":
+            from langchain_ollama import OllamaEmbeddings
+
             model_name = os.getenv("TEXT_EMBEDDING_MODEL_NAME", "qwen3-embedding:0.6b")
             base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -243,12 +199,14 @@ class EmbedModelFactory(BaseModelFactory):
         elif embed_type == "ALIYUN":
             model_name = os.getenv("ALIYUN_EMBED_MODEL_NAME", "qwen3-embedding")
             api_key = os.getenv("ALIYUN_ACCESS_KEY_SECRET")
+            base_url = os.getenv("ALIYUN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
             logger.info(f"📦 EmbedModel 使用阿里云嵌入模型: {model_name}")
 
             return DashScopeEmbeddingsWrapper(
                 model_name=model_name,
-                api_key=api_key
+                api_key=api_key,
+                base_url=base_url,
             )
 
         elif embed_type == "LOCAL_QWEN":
@@ -259,7 +217,7 @@ class EmbedModelFactory(BaseModelFactory):
 
             return LocalQwenEmbeddingsWrapper(
                 model_path=model_path,
-                device=device
+                device=device,
             )
 
         else:
@@ -284,11 +242,13 @@ class VisionModelFactory(BaseModelFactory):
         # 未设置 VISION_MODEL_TYPE 时，默认跟随 LLM_TYPE（保持向后兼容）
         vision_type = os.getenv("VISION_MODEL_TYPE", "").upper() or os.getenv("LLM_TYPE", "ALIYUN").upper()
 
-        if vision_type in {"DISABLED", "NONE", "OFF"}:
+        if vision_type in {"DISABLED", "NONE", "OFF", "FALSE"}:
             logger.info("🎨 VisionModel 已禁用")
             return None
 
         if vision_type == "OLLAMA":
+            from langchain_ollama import ChatOllama
+
             model_name = os.getenv("VISION_OLLAMA_MODEL_NAME") or os.getenv("OLLAMA_MODEL_NAME") or "qwen-vl:7b"
             base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 

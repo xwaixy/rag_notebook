@@ -12,7 +12,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { apiConfig } from '../config/api'
-import { useUserStore } from '../store/user'
+import { getAuthHeaders } from '../utils/auth'
 
 const props = defineProps({
   context: { type: String, default: '' },
@@ -21,7 +21,6 @@ const props = defineProps({
 
 const emit = defineEmits(['accept'])
 
-const userStore = useUserStore()
 const visible = ref(false)
 const completion = ref('')
 const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0
@@ -35,10 +34,7 @@ const wrapperStyle = computed(() => ({
 }))
 
 function getHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${userStore.token}`,
-  }
+  return getAuthHeaders({ 'Content-Type': 'application/json' })
 }
 
 function acceptCompletion() {

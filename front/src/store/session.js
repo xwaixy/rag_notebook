@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import axios from 'axios';
 import { apiConfig } from '../config/api';
+import { getAuthHeaders } from '../utils/auth';
 
 export const useSessionStore = defineStore('session', {
   state: () => ({
@@ -20,12 +21,9 @@ export const useSessionStore = defineStore('session', {
     async getUserSessions(userId) {
       try {
         this.loading = true;
-        const token = localStorage.getItem('jwt_token');
         
         const response = await axios.get(`${apiConfig.endpoints.getUserSessions}/${userId}`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
+          headers: getAuthHeaders()
         });
         
         // 正确处理响应数据，从 response.data.data.sessions 获取会话列表
@@ -66,12 +64,9 @@ export const useSessionStore = defineStore('session', {
     async getSession(sessionId) {
       try {
         this.loading = true;
-        const token = localStorage.getItem('jwt_token');
         
         const response = await axios.get(`${apiConfig.endpoints.getSession}${sessionId}`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
+          headers: getAuthHeaders()
         });
         
         // 处理可能的包装格式，支持 {code, message, data} 格式
@@ -96,12 +91,9 @@ export const useSessionStore = defineStore('session', {
     async deleteSession(sessionId) {
       try {
         this.loading = true;
-        const token = localStorage.getItem('jwt_token');
         
         await axios.delete(`${apiConfig.endpoints.deleteSession}${sessionId}`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
+          headers: getAuthHeaders()
         });
         
         // 从本地会话列表中移除
@@ -136,15 +128,11 @@ export const useSessionStore = defineStore('session', {
     async createSession(query) {
       try {
         this.loading = true;
-        const token = localStorage.getItem('jwt_token');
         
         // 发送第一个消息来创建会话
         const response = await fetch(apiConfig.endpoints.agentQueryStream, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             query: query
           })

@@ -64,11 +64,12 @@
 /**
  * NoteList 笔记列表页 —— 卡片式展示，支持分类筛选、搜索、下拉刷新、无限滚动。
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { apiConfig } from '../config/api'
 import { useUserStore } from '../store/user'
+import { getAuthHeaders, getAuthToken, getLoginRedirect } from '../utils/auth'
 import TagBadge from '../components/TagBadge.vue'
 import TabBar from '../components/TabBar.vue'
 
@@ -94,15 +95,37 @@ const categories = [
   { key: 'project', label: '项目' },
 ]
 
-/** 获取 token */
-const token = computed(() => userStore.token)
-
 /** 请求头 */
 function getHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token.value}`,
+  return getAuthHeaders({ 'Content-Type': 'application/json' })
+}
+
+function redirectToLogin(message = '请先登录') {
+  userStore.clearAuthState()
+  showToast(message)
+  finished.value = true
+  router.replace(getLoginRedirect(router.currentRoute.value.fullPath))
+}
+
+function ensureAuthenticated() {
+  if (getAuthToken()) return true
+  redirectToLogin()
+  return false
+}
+
+async function parseJsonResponse(res) {
+  if (res.status === 401) {
+    redirectToLogin('登录已失效，请重新登录')
+    return null
   }
+
+  const json = await res.json().catch(() => null)
+  if (!res.ok) {
+    showToast(json?.message || json?.detail || '请求失败')
+    finished.value = true
+    return null
+  }
+  return json
 }
 
 /** 截取笔记预览文本（移除 Markdown 标记，取前 100 字） */
@@ -136,6 +159,8 @@ function getCategoryColor(category) {
 /** 加载笔记列表 */
 async function fetchNotes(isRefresh = false) {
   if (loading.value || finished.value) return
+  if (!ensureAuthenticated()) return
+
   loading.value = true
 
   if (isRefresh) {
@@ -151,7 +176,9 @@ async function fetchNotes(isRefresh = false) {
   try {
     const url = `${apiConfig.endpoints.noteList}?${params.toString()}`
     const res = await fetch(url, { headers: getHeaders() })
-    const json = await res.json()
+    const json = await parseJsonResponse(res)
+    if (!json) return
+
     if (json.code === 200) {
       const newNotes = json.data.notes || []
       if (isRefresh) {
@@ -164,9 +191,13 @@ async function fetchNotes(isRefresh = false) {
       }
       // 成功获取数据后递增页码，供下次加载使用
       page.value++
+    } else {
+      showToast(json.message || '加载失败')
+      finished.value = true
     }
   } catch (e) {
     showToast('加载失败')
+    finished.value = true
   } finally {
     loading.value = false
   }
@@ -175,13 +206,19 @@ async function fetchNotes(isRefresh = false) {
 /** 搜索笔记 */
 async function handleSearch() {
   if (!searchQuery.value.trim()) return
+  if (!ensureAuthenticated()) return
+
   try {
     const url = `${apiConfig.endpoints.noteSearch}?q=${encodeURIComponent(searchQuery.value)}`
     const res = await fetch(url, { headers: getHeaders() })
-    const json = await res.json()
+    const json = await parseJsonResponse(res)
+    if (!json) return
+
     if (json.code === 200) {
       notes.value = json.data.notes || []
       finished.value = true
+    } else {
+      showToast(json.message || '搜索失败')
     }
   } catch (e) {
     showToast('搜索失败')
@@ -217,6 +254,8 @@ async function onRefresh() {
 
 /** 创建新笔记 */
 function createNote() {
+  if (!ensureAuthenticated()) return
+
   // 新建笔记前清除旧草稿，确保编辑器空白
   localStorage.removeItem('note_draft')
   router.push('/notes/new')

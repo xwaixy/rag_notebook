@@ -1,15 +1,13 @@
-import { useUserStore } from '../store/user';
+import { apiConfig } from '../config/api';
+import { getAuthHeaders, getAuthToken } from '../utils/auth';
 
 export function useAuthImage() {
-  const userStore = useUserStore();
-
   const getAllImages = async (md5) => {
-    const token = userStore.token;
-    if (!token) return {};
+    if (!getAuthToken()) return {};
 
     try {
-      const response = await fetch(`/knowledge/images/all/${md5}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const response = await fetch(apiConfig.endpoints.knowledgeImagesAll(md5), {
+        headers: getAuthHeaders(),
       });
       if (!response.ok) return {};
       const result = await response.json();

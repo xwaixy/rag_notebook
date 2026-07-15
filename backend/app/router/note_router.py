@@ -18,6 +18,7 @@ from app.schemas.models import (
     NoteUpdate,
 )
 from app.utils.auth_utils import get_current_user_id
+from app.utils.note_auto_tag import build_auto_tag_input
 
 note_router = APIRouter(prefix="/note", tags=["note"])
 
@@ -190,7 +191,8 @@ async def regenerate_tags(
         return success_response(message="笔记不存在")
 
     import asyncio
-    asyncio.create_task(init_manager.note_service._auto_tag_and_review(note_id, user_id, note.content))
+    auto_tag_input = build_auto_tag_input(note.title, note.content)
+    asyncio.create_task(init_manager.note_service._auto_tag_and_review(note_id, user_id, auto_tag_input, overwrite_tags=True))
     return success_response(message="标签生成任务已提交")
 
 

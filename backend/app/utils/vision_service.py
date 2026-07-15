@@ -269,6 +269,9 @@ class VisionService:
 
     async def describe_page(self, image_path: str, existing_text: str = "") -> str:
         """异步单页视觉描述"""
+        if self.model is None:
+            return existing_text if existing_text.strip() else ""
+
         if not os.path.exists(image_path):
             logger.error(f"【视觉服务】图片文件不存在: {image_path}")
             return ""
@@ -293,6 +296,9 @@ class VisionService:
 
     def describe_page_sync(self, image_path: str, existing_text: str = "") -> str:
         """同步单页视觉描述（用于 ThreadPoolExecutor 环境）"""
+        if self.model is None:
+            return existing_text if existing_text.strip() else ""
+
         if not os.path.exists(image_path):
             logger.error(f"【视觉服务】图片文件不存在: {image_path}")
             return ""
@@ -321,6 +327,12 @@ class VisionService:
         将多张页面图片一次性发送给视觉模型，要求按页分别描述。
         相比逐页调用，批量可以减少 HTTP 请求次数和 token 消耗（共享 prompt 前缀）。
         """
+        if self.model is None:
+            return {
+                pn: existing_texts[i] if existing_texts[i].strip() else ""
+                for i, pn in enumerate(page_numbers)
+            }
+
         for path in image_paths:
             if not os.path.exists(path):
                 logger.error(f"【视觉服务·批量】图片文件不存在: {path}")
@@ -362,6 +374,12 @@ class VisionService:
         existing_texts: list[str],
     ) -> dict[int, str]:
         """同步批量视觉描述（用于 ThreadPoolExecutor 环境）"""
+        if self.model is None:
+            return {
+                pn: existing_texts[i] if existing_texts[i].strip() else ""
+                for i, pn in enumerate(page_numbers)
+            }
+
         for path in image_paths:
             if not os.path.exists(path):
                 logger.error(f"【视觉服务·批量·同步】图片文件不存在: {path}")

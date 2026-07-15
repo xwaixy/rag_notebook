@@ -100,60 +100,78 @@ DJANGO_API_URL=http://django:8001
 
 ### 1. 准备环境变量
 
-复制本地环境变量文件，生成 Docker 专用配置：
+从脱敏模板生成本地配置文件：
 
 ```bash
-cp backend/.env backend/.env.docker
-cp DjangoUserService/.env DjangoUserService/.env.docker
+cp .env.example .env
+cp backend/.env.docker.example backend/.env.docker
+cp DjangoUserService/.env.docker.example DjangoUserService/.env.docker
 ```
 
-Docker 内部服务之间通过容器名访问，所以需要把 `.env.docker` 中的地址改成容器名：
+复制后必须编辑这三个文件：
 
-```env
-# backend/.env.docker
-MYSQL_HOST=mysql
-REDIS_HOST=redis
-DJANGO_API_URL=http://django:8001
-LOCAL_EMBED_MODEL_PATH=/models/Qwen3-Embedding-0.6B
-```
+- `.env` 的 `LOCAL_MODELS_DIR` 指向服务器上的模型目录。
+- `backend/.env.docker` 的 `SECRET_KEY` 与 `DjangoUserService/.env.docker` 的 `JWT_SECRET_KEY` 必须相同。
+- Backend 与 Django 的数据库账号密码必须与 `docker/mysql/init/01-init.sql` 中创建的 `rag_app` 用户一致；首次部署前请替换示例密码。
+- 阿里云、OpenAI、LangSmith 等真实 API Key 只写入本地 `.env.docker`，不要提交到 Git。
 
-```env
-# DjangoUserService/.env.docker
-DB_HOST=mysql
-REDIS_CACHE_URL=redis://redis:6379/1
-CELERY_BROKER_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/0
-```
+Docker 内部服务之间通过 `mysql`、`redis`、`django` 等服务名通信，示例文件已经使用这些容器地址。
 
-### 2. 构建镜像
+### 2. 校验配置
 
 ```bash
-docker compose build
+docker compose config
 ```
 
-如果之前构建失败或缓存异常，可以重新无缓存构建：
+该命令应能输出完整 Compose 配置且不报错。不要把输出中的环境变量内容粘贴到公开渠道。
+
+### 3. 生产环境启动
 
 ```bash
-docker compose build --no-cache
-```
-
-### 3. 启动基础服务
-
-```bash
-docker compose up -d mysql redis
+docker compose up -d --build
 docker compose ps
 ```
 
-如果本机已经启动了 MySQL 或 Redis，可能会出现 `address already in use`。这个项目的后端容器可以直接通过 `mysql:3306`、`redis:6379` 访问数据库和缓存，通常不需要把 MySQL/Redis 暴露到宿主机。
+生产环境只使用 `docker-compose.yml`，不要叠加开发配置。
 
-### 4. 启动全部服务
+### 4. Docker 开发模式
 
 ```bash
-docker compose up -d
-docker compose ps
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
-### 5. 查看日志
+开发配置会挂载源码，并让 FastAPI 使用 `--reload`。查看开发后端日志：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f backend
+```
+
+### 5. 持久化数据
+
+以下内容属于运行数据，不应提交到 Git，也不能在未备份时删除：
+
+- `backend/data/`：Chroma 向量库、MD5 去重记录和文档处理数据。
+- `mysql_data`：用户、会话、笔记、回顾等 MySQL 数据。
+- `redis_data`：Redis 持久化数据。
+- `django_media`：Django 用户上传媒体文件。
+
+以下操作会造成数据丢失：
+
+```bash
+docker compose down -v
+rm -rf backend/data/chromadb
+```
+
+- `docker compose down -v` 会删除 MySQL、Redis 和 Django media 等 named volumes。
+- 删除 `backend/data/chromadb` 会清空知识库和笔记向量，之后必须重新上传知识库并重建笔记向量。
+
+普通停止不会删除数据：
+
+```bash
+docker compose down
+```
+
+### 6. 查看日志
 
 ```bash
 docker compose logs -f backend
@@ -161,25 +179,11 @@ docker compose logs -f django
 docker compose logs -f front
 ```
 
-### 6. 访问项目
+### 7. 访问项目
 
 - 前端页面：http://127.0.0.1:3000
 - FastAPI 服务：http://127.0.0.1:8000
 - Django 服务：http://127.0.0.1:8001
-
-停止服务：
-
-```bash
-docker compose down
-```
-
-停止服务并删除 Docker 数据卷：
-
-```bash
-docker compose down -v
-```
-
-`down -v` 会删除 MySQL、Redis 等 Docker 数据卷，已有 Docker 数据会被清空，执行前需要确认。
 
 ## 本地开发启动
 
@@ -242,6 +246,12 @@ docker compose ps
 docker compose restart backend
 ```
 
+开发模式重启后端：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml restart backend
+```
+
 查看后端日志：
 
 ```bash
@@ -260,4 +270,3 @@ docker compose up -d
 ```bash
 docker compose exec backend bash
 ```
-

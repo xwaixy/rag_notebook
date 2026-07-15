@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logger_handler import logger
@@ -17,8 +17,11 @@ from app.models.note import Note
 from app.models.review_record import ReviewRecord
 from app.schemas.models import NoteCreate, NoteResponse, NoteUpdate
 from app.utils.config import chroma_config
+from app.utils.chroma_settings import chroma_collection_metadata
+from app.utils.note_auto_tag import build_auto_tag_input, normalize_manual_tags, parse_auto_tag_response_content
 from app.utils.path_tool import get_abstract_path
 from app.utils.prompt_loader import load_prompt
+from app.utils.related_notes import build_note_related_filter, distance_to_similarity
 
 NOTES_COLLECTION_NAME = "notes_collection"
 
@@ -56,6 +59,7 @@ class NoteService:
             collection_name=NOTES_COLLECTION_NAME,
             embedding_function=embed_model,
             persist_directory=persist_dir,
+            collection_metadata=chroma_collection_metadata(chroma_config),
         )
 
     @property
@@ -91,6 +95,7 @@ class NoteService:
             user_id=user_id,
             title=payload.title,
             content=payload.content,
+            tags=normalize_manual_tags(payload.tags),
         )
         db.add(note)
         await db.commit()
@@ -112,7 +117,8 @@ class NoteService:
             logger.error(f"笔记向量化失败 note_id={note_id}: {e}")
 
         # 触发后台异步标签生成（不阻塞创建响应）
-        asyncio.create_task(self._auto_tag_and_review(note_id, user_id, payload.content))
+        auto_tag_input = build_auto_tag_input(payload.title, payload.content)
+        asyncio.create_task(self._auto_tag_and_review(note_id, user_id, auto_tag_input))
 
         return self._doc_to_response(note)
 
@@ -134,6 +140,8 @@ class NoteService:
             note.title = payload.title
         if payload.content is not None:
             note.content = payload.content
+        if payload.tags is not None:
+            note.tags = normalize_manual_tags(payload.tags)
 
         await db.commit()
         await db.refresh(note)
@@ -296,6 +304,7 @@ class NoteService:
                 self._notes_store.similarity_search_with_score,
                 note.content,
                 k=top_k + 1,  # 多取一个，排除自身
+                filter=build_note_related_filter(user_id),
             )
             for doc, score in note_docs:
                 meta_note_id = doc.metadata.get("note_id", "")
@@ -305,7 +314,7 @@ class NoteService:
                     "id": meta_note_id,
                     "title": doc.metadata.get("title", "无标题"),
                     "content_preview": doc.page_content[:150],
-                    "similarity": round(score, 4),
+                    "similarity": distance_to_similarity(score),
                     "source": "note",
                 })
         except Exception as e:
@@ -328,14 +337,14 @@ class NoteService:
                     "title": doc.metadata.get("original_filename", doc.metadata.get("source", "知识库文档")),
                     "content_preview": doc.page_content[:150],
                     "content": doc.page_content,  # 完整切片内容，供前端内联展开查看
-                    "similarity": round(score, 4),
+                    "similarity": distance_to_similarity(score),
                     "source": "knowledge_base",
                 })
         except Exception as e:
             logger.error(f"从知识库检索关联文档失败: {e}")
 
-        # 按相似度降序排序（分数越低越相似），取 top_k
-        related_items.sort(key=lambda x: x["similarity"])
+        # similarity 已归一化为 0~1，值越大越相似。
+        related_items.sort(key=lambda x: x["similarity"], reverse=True)
         return related_items[:top_k]
 
     @staticmethod
@@ -362,7 +371,7 @@ class NoteService:
 
         return text
 
-    async def _auto_tag_and_review(self, note_id: str, user_id: str, content: str):
+    async def _auto_tag_and_review(self, note_id: str, user_id: str, content: str, overwrite_tags: bool = False):
         """
         后台异步任务：LLM 分析笔记内容 → 生成标签和分类 → 更新 MySQL → 创建回顾记录。
 
@@ -380,26 +389,22 @@ class NoteService:
             chat_model = init_manager.chat_model
 
             response = await chat_model.ainvoke([HumanMessage(content=prompt)])
-            raw_output = response.content.strip()
-
-            # 提取 JSON：LLM 输出可能包含前言、markdown代码块等
-            json_str = self._extract_json(raw_output)
-
-            # 解析 LLM 返回的 JSON
-            result = json.loads(json_str)
-            tags = result.get("tags", [])
-            category = result.get("category", "life")
+            tags, category = parse_auto_tag_response_content(response.content)
 
             logger.info(f"自动标签生成完成 note_id={note_id}, tags={tags}, category={category}")
 
-            # 写入 MySQL
+            # 写入 MySQL。默认保留用户手动标签，避免新建后被后台自动标签覆盖。
             async with AsyncSessionLocal() as session:
-                stmt = (
-                    update(Note)
-                    .where(Note.id == note_id, Note.user_id == user_id)
-                    .values(tags=tags, category=category)
-                )
-                await session.execute(stmt)
+                stmt = select(Note).where(Note.id == note_id, Note.user_id == user_id)
+                result = await session.execute(stmt)
+                note = result.scalar_one_or_none()
+                if not note:
+                    logger.warning(f"自动标签写入时笔记不存在 note_id={note_id}")
+                    return
+
+                if overwrite_tags or not note.tags:
+                    note.tags = tags
+                note.category = category
 
                 # 创建回顾记录（首次间隔 1 天）
                 now = datetime.now()
@@ -415,7 +420,7 @@ class NoteService:
                 await session.commit()
 
         except json.JSONDecodeError as e:
-            logger.error(f"解析 LLM 标签输出失败 note_id={note_id}, raw={raw_output[:200]}, extracted={json_str[:200]}: {e}")
+            logger.error(f"解析 LLM 标签输出失败 note_id={note_id}: {e}")
         except Exception as e:
             logger.error(f"自动标签后台任务失败 note_id={note_id}: {e}")
 

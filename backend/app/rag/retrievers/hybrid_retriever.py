@@ -7,6 +7,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
 from app.utils.config import chroma_config
+from app.utils.rag_query import get_dynamic_retrieval_weights
 
 from .empty_retriever import EmptyRetriever
 
@@ -94,29 +95,4 @@ class HybridRetriever:
         :param query: 查询语句
         :return: 权重列表 [向量检索权重, BM25检索权重]
         """
-        default_vector_weight = 0.5
-        default_bm25_weight = 0.5
-
-        if not query:
-            return [default_vector_weight, default_bm25_weight]
-
-        query_length = len(query)
-        query_words = len(query.split())
-
-        if query_length > 50:
-            vector_weight = 0.7
-            bm25_weight = 0.3
-        elif query_length < 20:
-            vector_weight = 0.3
-            bm25_weight = 0.7
-        else:
-            vector_weight = default_vector_weight
-            bm25_weight = default_bm25_weight
-
-        if query_words > 0:
-            word_density = query_words / query_length
-            if word_density > 0.1:
-                bm25_weight = min(bm25_weight + 0.1, 0.7)
-                vector_weight = max(vector_weight - 0.1, 0.3)
-
-        return [vector_weight, bm25_weight]
+        return get_dynamic_retrieval_weights(query)

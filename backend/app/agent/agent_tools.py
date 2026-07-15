@@ -1,4 +1,7 @@
+import asyncio
 import datetime
+import hashlib
+import time
 from collections.abc import Callable
 from contextvars import ContextVar
 
@@ -13,6 +16,50 @@ from app.utils.auth_utils import decode_django_jwt
 
 current_user_id_var: ContextVar[str] = ContextVar('current_user_id', default=None)
 thinking_callback_var: ContextVar[Callable | None] = ContextVar('thinking_callback', default=None)
+
+NOTE_CREATE_IDEMPOTENCY_TTL_SECONDS = 120
+_note_create_idempotency_cache: dict[str, tuple[float, str]] = {}
+_note_create_idempotency_locks: dict[str, asyncio.Lock] = {}
+_note_create_idempotency_guard: asyncio.Lock | None = None
+
+
+def _get_note_create_idempotency_guard() -> asyncio.Lock:
+    global _note_create_idempotency_guard
+    if _note_create_idempotency_guard is None:
+        _note_create_idempotency_guard = asyncio.Lock()
+    return _note_create_idempotency_guard
+
+
+def _normalize_idempotency_text(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _build_note_create_idempotency_key(user_id: str, title: str, content: str) -> str:
+    normalized_title = _normalize_idempotency_text(title)
+    normalized_content = _normalize_idempotency_text(content)
+    digest = hashlib.sha256(f"{normalized_title}\0{normalized_content}".encode("utf-8")).hexdigest()
+    return f"{user_id}:{digest}"
+
+
+def _format_create_note_success(note) -> str:
+    return f"✅ 笔记创建成功！\n- 标题: {note.title}\n- ID: {note.id}\n- 标签和分类正在后台生成中..."
+
+
+def _prune_note_create_idempotency_cache(now: float) -> None:
+    expired_keys = [key for key, (expires_at, _) in _note_create_idempotency_cache.items() if expires_at <= now]
+    for key in expired_keys:
+        _note_create_idempotency_cache.pop(key, None)
+        lock = _note_create_idempotency_locks.get(key)
+        if lock is None or not lock.locked():
+            _note_create_idempotency_locks.pop(key, None)
+
+
+def _reset_note_create_idempotency_state() -> None:
+    """测试辅助：清空 AI 创建笔记工具的短期幂等状态。"""
+    global _note_create_idempotency_guard
+    _note_create_idempotency_cache.clear()
+    _note_create_idempotency_locks.clear()
+    _note_create_idempotency_guard = None
 
 def set_current_user_id(user_id: str):
     """设置当前用户ID到上下文"""
@@ -166,14 +213,42 @@ async def create_note_tool(title: str, content: str = "") -> str:
     if not user_id:
         return "错误: 无法确定用户身份"
     from app.schemas.models import NoteCreate
-    async with AsyncSessionLocal() as db:
-        try:
-            payload = NoteCreate(title=title, content=content)
-            note = await init_manager.note_service.create_note(db, user_id, payload)
-            return f"✅ 笔记创建成功！\n- 标题: {note.title}\n- ID: {note.id}\n- 标签和分类正在后台生成中..."
-        except Exception as e:
-            logger.error(f"创建笔记失败: {e}")
-            return f"创建笔记时出错: {str(e)}"
+
+    idempotency_key = _build_note_create_idempotency_key(user_id, title, content)
+    guard = _get_note_create_idempotency_guard()
+
+    async with guard:
+        now = time.monotonic()
+        _prune_note_create_idempotency_cache(now)
+        cached = _note_create_idempotency_cache.get(idempotency_key)
+        if cached:
+            logger.info(f"命中 AI 创建笔记幂等缓存 user_id={user_id}")
+            return cached[1]
+        key_lock = _note_create_idempotency_locks.setdefault(idempotency_key, asyncio.Lock())
+
+    async with key_lock:
+        async with guard:
+            now = time.monotonic()
+            _prune_note_create_idempotency_cache(now)
+            cached = _note_create_idempotency_cache.get(idempotency_key)
+            if cached:
+                logger.info(f"命中 AI 创建笔记幂等缓存 user_id={user_id}")
+                return cached[1]
+
+        async with AsyncSessionLocal() as db:
+            try:
+                payload = NoteCreate(title=title, content=content)
+                note = await init_manager.note_service.create_note(db, user_id, payload)
+                result = _format_create_note_success(note)
+                async with guard:
+                    _note_create_idempotency_cache[idempotency_key] = (
+                        time.monotonic() + NOTE_CREATE_IDEMPOTENCY_TTL_SECONDS,
+                        result,
+                    )
+                return result
+            except Exception as e:
+                logger.error(f"创建笔记失败: {e}")
+                return f"创建笔记时出错: {str(e)}"
 
 @tool(description="获取某篇笔记的关联推荐，包括语义相似的笔记和知识库文档。参数 note_id 为笔记ID，top_k 为返回数量（默认3）。")
 async def get_related_notes_tool(note_id: str, top_k: int = 3) -> str:

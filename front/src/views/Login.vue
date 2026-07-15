@@ -61,11 +61,12 @@
 
 <script setup>
 import { ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { showToast } from 'vant';
 import { useUserStore } from '../store/user';
 
 const router = useRouter();
+const route = useRoute();
 const userStore = useUserStore();
 
 const username = ref('');
@@ -93,7 +94,7 @@ const onSubmit = async (values) => {
         message: result.message
       });
       
-      router.push('/');
+      router.replace(route.query.redirect || '/');
     } else {
       showToast({
         type: 'fail',

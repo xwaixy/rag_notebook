@@ -31,8 +31,10 @@ class UploadAPIView(APIView):
             # 生成一个随机字符串充当文件名，并使用实际文件的扩展名
             filename = uuid() + os.path.splitext(img.name)[1]
             # 保存文件到media/img目录
-            filepath = settings.MEDIA_ROOT / 'img' / filename
+            upload_dir = settings.MEDIA_ROOT / 'img'
+            filepath = upload_dir / filename
             try:
+                upload_dir.mkdir(parents=True, exist_ok=True)
                 with open(filepath, 'wb') as f:
                     for chunk in img.chunks():
                         f.write(chunk)

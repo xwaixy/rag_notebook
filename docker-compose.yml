@@ -50,7 +50,9 @@ services:
     volumes:
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs
-      - /home/wyl/models:/models:ro
+      - ${LOCAL_MODELS_DIR:-/home/wyl/models}:/models:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
 

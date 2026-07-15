@@ -39,10 +39,15 @@
     >
       <div v-if="quizLoading" class="quiz-loading">
         <van-loading type="spinner" size="24" />
-        <p>正在生成回顾问题...</p>
+        <p>正在生成至少 5 道回顾问题...</p>
       </div>
 
       <template v-else-if="quizData">
+        <div class="quiz-progress-bar">
+          <span>第 {{ currentQuestionIndex + 1 }} / {{ quizQuestions.length }} 题</span>
+          <span>{{ answered ? (selectedChoice === quizData.answer ? '答对' : '待巩固') : '请选择答案' }}</span>
+        </div>
+
         <h3 class="quiz-question">{{ quizData.question }}</h3>
 
         <div class="quiz-choices">
@@ -76,7 +81,7 @@
             round
             @click="handleQuizDone"
           >
-            标记已回顾
+            {{ isLastQuestion ? '标记已回顾' : '下一题' }}
           </van-button>
         </div>
       </template>
@@ -91,14 +96,13 @@
  * DailyReview 每日回顾页面 —— 展示待回顾笔记列表，使用艾宾浩斯曲线算法。
  * 用户滑动浏览卡片，标记已回顾或跳过。
  */
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { showToast } from 'vant'
 import { apiConfig } from '../config/api'
-import { useUserStore } from '../store/user'
+import { getAuthHeaders } from '../utils/auth'
 import ReviewCard from '../components/ReviewCard.vue'
 import TabBar from '../components/TabBar.vue'
 
-const userStore = useUserStore()
 const loading = ref(false)
 const reviews = ref([])
 const questions = reactive({})   /** note_id → 回顾问题（string） */
@@ -108,22 +112,40 @@ const doneCount = ref(0)
 /** 弹窗状态 */
 const popupVisible = ref(false)
 const quizLoading = ref(false)
-const quizData = ref(null)         /** { question, choices, answer } */
+const quizQuestions = ref([])      /** Array<{ question, choices, answer }> */
+const quizData = computed(() => quizQuestions.value[currentQuestionIndex.value] || null)
+const currentQuestionIndex = ref(0)
 const currentNoteId = ref('')
 const selectedChoice = ref('')
 const answered = ref(false)
+const isLastQuestion = computed(() => currentQuestionIndex.value >= quizQuestions.value.length - 1)
 
 /** 请求头 */
 function getHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${userStore.token}`,
-  }
+  return getAuthHeaders({ 'Content-Type': 'application/json' })
 }
 
 /** 获取某个笔记的回顾问题（带缓存） */
 function getQuestion(noteId) {
-  return questions[noteId] || '请回顾这篇笔记的主要内容'
+  return questions[noteId] || '点击立即回顾，生成知识点选择题'
+}
+
+function normalizeQuizQuestion(question) {
+  if (!question?.question || !Array.isArray(question.choices) || question.choices.length === 0) {
+    return null
+  }
+
+  const normalized = { ...question, answer: String(question.answer || '') }
+  const letterIndex = ['A', 'B', 'C', 'D'].indexOf(normalized.answer.toUpperCase())
+  if (letterIndex >= 0 && normalized.choices[letterIndex]) {
+    normalized.answer = normalized.choices[letterIndex]
+  }
+  return normalized
+}
+
+function normalizeQuizQuestions(data) {
+  const rawQuestions = Array.isArray(data?.questions) ? data.questions : [data]
+  return rawQuestions.map(normalizeQuizQuestion).filter(Boolean)
 }
 
 /** 点击卡片 —— 弹窗展示选择题 */
@@ -132,7 +154,8 @@ async function handleCardClick(item) {
   currentNoteId.value = item.note_id
   popupVisible.value = true
   quizLoading.value = true
-  quizData.value = null
+  quizQuestions.value = []
+  currentQuestionIndex.value = 0
   selectedChoice.value = ''
   answered.value = false
 
@@ -142,17 +165,15 @@ async function handleCardClick(item) {
     })
     const json = await res.json()
     if (json.code === 200 && json.data) {
-      const data = json.data
-      // 归一化：如果 answer 是字母（A/B/C/D），映射为对应选项文本
-      if (data.choices && data.choices.length > 0) {
-        const letterIndex = ['A', 'B', 'C', 'D'].indexOf(data.answer?.toUpperCase())
-        if (letterIndex >= 0 && data.choices[letterIndex]) {
-          data.answer = data.choices[letterIndex]
-        }
+      const normalizedQuestions = normalizeQuizQuestions(json.data)
+      if (normalizedQuestions.length === 0) {
+        showToast('回顾问题为空')
+        popupVisible.value = false
+        return
       }
-      quizData.value = data
+      quizQuestions.value = normalizedQuestions
       // 缓存问题文本供卡片展示
-      questions[item.note_id] = data.question
+      questions[item.note_id] = `共 ${normalizedQuestions.length} 道知识点选择题，点击开始回顾`
     } else {
       showToast('获取回顾问题失败')
       popupVisible.value = false
@@ -174,6 +195,15 @@ function selectChoice(choice) {
 
 /** 答完后标记已回顾 */
 async function handleQuizDone() {
+  if (!answered.value) return
+
+  if (!isLastQuestion.value) {
+    currentQuestionIndex.value++
+    selectedChoice.value = ''
+    answered.value = false
+    return
+  }
+
   const noteId = currentNoteId.value
   try {
     const res = await fetch(apiConfig.endpoints.reviewDone(noteId), {
@@ -194,7 +224,8 @@ async function handleQuizDone() {
 
 /** 重置弹窗状态 */
 function resetQuiz() {
-  quizData.value = null
+  quizQuestions.value = []
+  currentQuestionIndex.value = 0
   selectedChoice.value = ''
   answered.value = false
   quizLoading.value = false
@@ -287,6 +318,15 @@ onMounted(() => {
 .quiz-loading p {
   margin-top: 12px;
   font-size: 14px;
+}
+.quiz-progress-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  color: var(--van-primary-color, #D4914A);
+  font-size: 13px;
+  font-weight: 600;
 }
 .quiz-question {
   margin: 0 0 24px;

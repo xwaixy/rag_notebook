@@ -1,7 +1,5 @@
 main_prompt: app/prompt/main_prompt.txt
 rag_summary_prompt: app/prompt/rag_summarize.txt
-report_prompt: app/prompt/report_prompt.txt
-reorder_prompt: app/prompt/reorder_prompt.txt
 auto_tag_prompt: app/prompt/auto_tag_prompt.txt
 review_question_prompt: app/prompt/review_question_prompt.txt
 autocomplete_prompt: app/prompt/autocomplete_prompt.txt

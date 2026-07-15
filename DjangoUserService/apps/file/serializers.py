@@ -13,6 +13,6 @@ class ImgSerializer(serializers.Serializer):
     @staticmethod
     def validate_img(image):
         """这里要对图片进行验证"""
-        if image.size > 1024 * 1024:
-            raise serializers.ValidationError('图片大小不能超过1MB')
+        if image.size > 2 * 1024 * 1024:
+            raise serializers.ValidationError('图片大小不能超过2MB')
         return image

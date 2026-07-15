@@ -127,14 +127,6 @@
       </div>
     </div>
 
-    <van-action-sheet
-      v-model:show="showActions"
-      :actions="documentActions"
-      :title="currentDocument?.original_filename || currentDocument?.filename"
-      @select="onActionSelect"
-      cancel-text="取消"
-    />
-
     <van-popup v-model:show="showDetail" position="bottom" :style="{ height: '70%' }" round>
       <div class="detail-header">
         <h4>{{ $t('knowledgebase.documentContent') }}</h4>
@@ -221,6 +213,8 @@ import { useRouter } from 'vue-router';
 import { showToast, showDialog } from 'vant';
 import { useI18n } from 'vue-i18n';
 import { useUserStore } from '../store/user';
+import { apiConfig } from '../config/api';
+import { getAuthHeaders, getAuthToken, getLoginRedirect } from '../utils/auth';
 // 图片鉴权钩子：负责获取带 token 的图片URL，或通过 /images/all/{md5} 缓存全部 base64 图片
 import { useAuthImage } from '../composables/useAuthImage';
 
@@ -271,28 +265,44 @@ const groupImagesByPage = (imagePaths, imageMap) => {
   return pageOrder;
 };
 
-const showActions = ref(false);
-const documentActions = ref([
-  { name: '查看内容', action: 'viewContent' },
-  { name: '查看切片', action: 'viewChunks' },
-  { name: '删除文档', action: 'deleteDoc', color: '#ee0a24' }
-]);
-
 const onClickLeft = () => {
   router.back();
 };
 
+const redirectToLogin = (message = t('common.login')) => {
+  userStore.clearAuthState();
+  selectedFiles.value = [];
+  showToast(message);
+  router.replace(getLoginRedirect(router.currentRoute.value.fullPath));
+};
+
+const ensureAuthenticated = () => {
+  if (getAuthToken()) return true;
+  redirectToLogin();
+  return false;
+};
+
+const handleUnauthorized = () => {
+  redirectToLogin('登录已失效，请重新登录');
+};
+
 const openFilePicker = () => {
+  if (!ensureAuthenticated()) return;
   fileInput.value?.click();
 };
 
 const handleFileSelect = (event) => {
+  if (!ensureAuthenticated()) {
+    event.target.value = '';
+    return;
+  }
   const files = Array.from(event.target.files);
   selectedFiles.value = [...selectedFiles.value, ...files];
   event.target.value = '';
 };
 
 const handleDrop = (event) => {
+  if (!ensureAuthenticated()) return;
   const files = Array.from(event.dataTransfer.files);
   selectedFiles.value = [...selectedFiles.value, ...files];
 };
@@ -313,12 +323,7 @@ const uploadFiles = async () => {
     return;
   }
 
-  const token = userStore.token;
-  if (!token) {
-    showToast(t('common.login'));
-    router.push('/login');
-    return;
-  }
+  if (!ensureAuthenticated()) return;
 
   uploading.value = true;
   uploadComplete.value = false;
@@ -338,13 +343,16 @@ const uploadFiles = async () => {
   });
 
   try {
-    const response = await fetch('/knowledge/add/multiple/stream', {
+    const response = await fetch(apiConfig.endpoints.uploadMultipleFilesStream, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      },
+      headers: getAuthHeaders(),
       body: formData
     });
+
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
 
     if (!response.ok) {
       throw new Error('Upload failed');
@@ -425,20 +433,19 @@ const parseEvent = (event) => {
 };
 
 const fetchDocuments = async () => {
-  const token = userStore.token;
-  if (!token) {
-    return;
-  }
+  if (!getAuthToken()) return;
 
   loadingDocuments.value = true;
   try {
-    const response = await fetch('/knowledge/list', {
+    const response = await fetch(apiConfig.endpoints.knowledgeList, {
       method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
-      }
+      headers: getAuthHeaders({ Accept: 'application/json' })
     });
+
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
 
     if (response.ok) {
       const result = await response.json();
@@ -456,20 +463,19 @@ const fetchDocuments = async () => {
 };
 
 const fetchDocumentDetail = async (filename) => {
-  const token = userStore.token;
-  if (!token) {
-    return;
-  }
+  if (!getAuthToken()) return;
 
   loadingDetail.value = true;
   try {
-    const response = await fetch(`/knowledge/detail?filename=${encodeURIComponent(filename)}`, {
+    const response = await fetch(apiConfig.endpoints.knowledgeDetail(filename), {
       method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
-      }
+      headers: getAuthHeaders({ Accept: 'application/json' })
     });
+
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
 
     if (response.ok) {
       const result = await response.json();
@@ -487,22 +493,21 @@ const fetchDocumentDetail = async (filename) => {
 };
 
 const fetchDocumentChunks = async (filename) => {
-  const token = userStore.token;
-  if (!token) {
-    return;
-  }
+  if (!getAuthToken()) return;
 
   loadingChunks.value = true;
   chunks.value = [];
   totalChunks.value = 0;
   try {
-    const response = await fetch(`/knowledge/chunks?filename=${encodeURIComponent(filename)}`, {
+    const response = await fetch(apiConfig.endpoints.knowledgeChunks(filename), {
       method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
-      }
+      headers: getAuthHeaders({ Accept: 'application/json' })
     });
+
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
 
     if (response.ok) {
       const result = await response.json();
@@ -522,8 +527,7 @@ const fetchDocumentChunks = async (filename) => {
 
 /** 与列表展示一致：优先 original_filename，否则 filename（后端按文件名删 MD5 与向量文档） */
 const deleteDocumentByFilename = async (filename) => {
-  const token = userStore.token;
-  if (!token || !filename) {
+  if (!getAuthToken() || !filename) {
     return false;
   }
 
@@ -533,15 +537,17 @@ const deleteDocumentByFilename = async (filename) => {
       delete_documents: 'true',
     });
     const response = await fetch(
-      `/knowledge/delete/filename?${qs.toString()}`,
+      `${apiConfig.endpoints.knowledgeDeleteByFilename}?${qs.toString()}`,
       {
         method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-        },
+        headers: getAuthHeaders({ Accept: 'application/json' }),
       }
     );
+
+    if (response.status === 401) {
+      handleUnauthorized();
+      return false;
+    }
 
     if (response.ok) {
       const result = await response.json();
@@ -577,19 +583,18 @@ const handleDeleteDocument = async (doc) => {
 };
 
 const cleanAllVectors = async () => {
-  const token = userStore.token;
-  if (!token) {
-    return;
-  }
+  if (!getAuthToken()) return;
 
   try {
-    const response = await fetch('/knowledge/clean', {
+    const response = await fetch(apiConfig.endpoints.cleanVectors, {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
-      }
+      headers: getAuthHeaders({ Accept: 'application/json' })
     });
+
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
 
     if (response.ok) {
       showToast(t('knowledgebase.cleanSuccess'));
@@ -648,38 +653,6 @@ const viewDocumentChunks = async () => {
   showChunks.value = true;
   await fetchDocumentChunks(currentDocument.value.filename);
   await loadChunkImages(chunks.value, currentDocument.value.md5);
-};
-
-const showDocumentActions = (doc) => {
-  currentDocument.value = doc;
-  showActions.value = true;
-};
-
-const onActionSelect = async (action) => {
-  showActions.value = false;
-  
-  switch (action.action) {
-    case 'viewContent':
-      detailPageImages.value = [];
-      const detail = await fetchDocumentDetail(currentDocument.value.filename);
-      if (detail) {
-        currentDocument.value = detail;
-        if (detail.md5 && detail.images?.length) {
-          const imageMap = await getAllImages(detail.md5);
-          detailPageImages.value = groupImagesByPage(detail.images, imageMap);
-        }
-      }
-      showDetail.value = true;
-      break;
-    case 'viewChunks':
-      showChunks.value = true;
-      await fetchDocumentChunks(currentDocument.value.filename);
-      await loadChunkImages(chunks.value, currentDocument.value.md5);
-      break;
-    case 'deleteDoc':
-      showToast('删除功能开发中');
-      break;
-  }
 };
 
 const getStatusClass = (status) => {

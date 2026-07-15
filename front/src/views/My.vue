@@ -49,6 +49,7 @@ import { computed, ref } from 'vue';
 import { showDialog, showToast } from 'vant';
 import TabBar from '../components/TabBar.vue';
 import { useI18n } from 'vue-i18n';
+import { getLoginRedirect, isAuthenticated } from '../utils/auth';
 
 const userStore = useUserStore();
 const router = useRouter();
@@ -56,12 +57,12 @@ const { t } = useI18n();
 
 // 从store获取用户信息和登录状态
 const userInfo = computed(() => userStore.userInfo);
-const isLogin = computed(() => userStore.getLoginStatus);
+const isLogin = computed(() => isAuthenticated());
 const userBio = computed(() => userStore.getUserBio || t('profile.bio'));
 
 // 跳转到登录页
 const goToLogin = () => {
-  router.push('/login');
+  router.push(getLoginRedirect(router.currentRoute.value.fullPath));
 };
 
 // 跳转到注册页
@@ -102,7 +103,7 @@ const handleLogout = () => {
   }).then((action) => {
     if (action === 'confirm') {
       userStore.logout();
-      router.push('/login');
+      router.replace('/login');
     }
   });
 };

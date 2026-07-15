@@ -90,6 +90,7 @@ import { showToast, Toast } from 'vant';
 import TabBar from '../components/TabBar.vue';
 import { useSessionStore } from '../store/session';
 import { useUserStore } from '../store/user';
+import { getLoginRedirect, isAuthenticated } from '../utils/auth';
 
 const router = useRouter();
 const route = useRoute();
@@ -109,9 +110,9 @@ watch(() => route.path, async (newPath) => {
 // 加载会话列表
 const loadSessions = async () => {
   // 检查是否登录
-  if (!userStore.getLoginStatus) {
+  if (!isAuthenticated()) {
     showToast('请先登录');
-    router.push('/login');
+    router.replace(getLoginRedirect(router.currentRoute.value.fullPath));
     return;
   }
   

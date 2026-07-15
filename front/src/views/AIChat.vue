@@ -50,18 +50,28 @@
                   <span class="thinking-step-content">{{ step.content }}</span>
                   <div v-if="step.details" class="thinking-details">
                     <template v-if="step.details.documents">
-                      <div v-for="(doc, dIndex) in step.details.documents.slice(0, 3)" :key="dIndex" class="thinking-doc-item">
-                        <span class="thinking-doc-source">{{ doc.source }}</span>
-                        <span class="thinking-doc-score">{{ (doc.score * 100).toFixed(0) }}%</span>
-                      </div>
-                      <div v-if="step.details.documents.length > 3" class="thinking-doc-more">
-                        ... 还有 {{ step.details.documents.length - 3 }} 个文档
+                      <div class="thinking-doc-list">
+                        <div v-for="(doc, dIndex) in step.details.documents" :key="dIndex" class="thinking-doc-item">
+                          <div class="thinking-doc-title-row">
+                            <span class="thinking-doc-index">#{{ doc.index || dIndex + 1 }}</span>
+                            <span class="thinking-doc-source">{{ doc.source }}</span>
+                          </div>
+                          <div class="thinking-doc-metrics">
+                            <span v-if="hasFiniteScore(doc.vector_similarity)" class="thinking-doc-metric">向量相似度：{{ formatScorePercent(doc.vector_similarity) }}</span>
+                            <span v-if="hasFiniteScore(doc.vector_distance)" class="thinking-doc-metric">distance：{{ formatNumber(doc.vector_distance, 3) }}</span>
+                            <span v-if="hasFiniteScore(doc.lexical_score)" class="thinking-doc-metric">词面分：{{ formatScorePercent(doc.lexical_score) }}</span>
+                            <span v-if="hasFiniteScore(doc.metadata_score)" class="thinking-doc-metric">元数据分：{{ formatScorePercent(doc.metadata_score) }}</span>
+                            <span v-if="hasFiniteScore(doc.final_score)" class="thinking-doc-metric">综合分：{{ formatNumber(doc.final_score, 2) }}</span>
+                            <span v-if="doc.retrieval_source" class="thinking-doc-metric">召回来源：{{ formatRetrievalSource(doc.retrieval_source) }}</span>
+                            <span v-if="doc.retrieval_sources && doc.retrieval_sources.length" class="thinking-doc-metric">全部来源：{{ formatRetrievalSources(doc.retrieval_sources) }}</span>
+                          </div>
+                        </div>
                       </div>
                     </template>
                     <template v-else-if="step.details.scores">
-                      <div v-for="(sc, cIndex) in step.details.scores.slice(0, 3)" :key="cIndex" class="thinking-score-item">
+                      <div v-for="(sc, cIndex) in step.details.scores" :key="cIndex" class="thinking-score-item">
                         <span>#{{ sc.rank || sc.index }}</span>
-                        <span>{{ (sc.score * 100).toFixed(0) }}%</span>
+                        <span>{{ formatScorePercent(sc.score) }}</span>
                         <span class="thinking-score-preview">{{ truncateText(sc.preview, 40) }}</span>
                       </div>
                     </template>
@@ -79,7 +89,8 @@
               </div>
             </div>
             <!-- 回复正文 -->
-            <div v-if="message.content" v-html="formatMessage(message.content)"></div>
+            <div v-if="message.role === 'assistant' && message.streaming" class="streaming-text">{{ message.content }}</div>
+            <div v-else-if="message.content" v-html="message.renderedContent || formatMessage(message.content)"></div>
             <!-- 打字指示器（无内容且无思考过程时显示） -->
             <div v-if="message.role === 'assistant' && !message.content && (!message.thinking || message.thinking.length === 0)" class="typing-indicator">
               <span></span>
@@ -116,7 +127,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue';
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import TabBar from '../components/TabBar.vue';
 import { showToast } from 'vant';
@@ -126,33 +137,28 @@ import DOMPurify from 'dompurify';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import 'highlight.js/lib/common';
-import { apiConfig } from '../config/api';
-import { useUserStore } from '../store/user';
 import { useSessionStore } from '../store/session';
-
-// 从cookie中获取CSRF token
-const getCsrfToken = () => {
-  const cookieValue = document.cookie
-    .split('; ')
-    .find(row => row.startsWith('csrftoken='))
-    ?.split('=')[1];
-  return cookieValue || '';
-};
+import { apiConfig } from '../config/api';
+import { getAuthHeaders, isAuthenticated } from '../utils/auth';
 
 // 聊天消息
 const messages = ref([
-  { role: 'assistant', content: '你好！我是智能笔记助手，帮你整理笔记、优化内容、回答关于笔记的问题。' }
+  {
+    role: 'assistant',
+    content: '你好！我是智能笔记助手，帮你整理笔记、优化内容、回答关于笔记的问题。',
+    renderedContent: '你好！我是智能笔记助手，帮你整理笔记、优化内容、回答关于笔记的问题。',
+    streaming: false,
+  }
 ]);
 const userInput = ref('');
 const messagesContainer = ref(null);
 const isLoading = ref(false);
 const sessionId = ref('');
-const hasJumped = ref(false);
 const autoCollapseTimer = ref(null);
+let scrollRafId = null;
 
 const router = useRouter();
 const route = useRoute();
-const userStore = useUserStore();
 const sessionStore = useSessionStore();
 
 // 欢迎状态：没有任何用户消息时显示
@@ -222,6 +228,36 @@ const truncateText = (text, maxLen) => {
   return text.length > maxLen ? text.slice(0, maxLen) + '...' : text;
 };
 
+const hasFiniteScore = (value) => Number.isFinite(Number(value));
+
+const formatScorePercent = (value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '无分数';
+  const clamped = Math.min(1, Math.max(0, numeric));
+  return `${(clamped * 100).toFixed(0)}%`;
+};
+
+const formatNumber = (value, digits = 2) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '无';
+  return numeric.toFixed(digits);
+};
+
+const formatRetrievalSource = (source) => {
+  const sourceMap = {
+    original_vector_query: '原始问题向量检索',
+    original_query: '原始问题混合检索',
+    hyde_vector_query: 'HyDE 向量检索',
+    hyde: 'HyDE 混合检索',
+  };
+  return sourceMap[source] || source || '未知来源';
+};
+
+const formatRetrievalSources = (sources) => {
+  if (!Array.isArray(sources)) return '';
+  return sources.map(formatRetrievalSource).join('、');
+};
+
 // localStorage 存储最近 5 条思考过程
 const THINKING_HISTORY_KEY = 'ai_thinking_history';
 
@@ -254,28 +290,55 @@ const toggleThinking = (message) => {
   }
 };
 
+const scrollToBottom = () => {
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+  }
+};
+
+const scheduleScrollToBottom = () => {
+  if (scrollRafId !== null) return;
+
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = null;
+    scrollToBottom();
+  });
+};
+
 // 发送消息
 const sendMessage = async () => {
   if (!userInput.value.trim() || isLoading.value) return;
   
   // 检查是否登录
-  if (!userStore.getLoginStatus) {
+  if (!isAuthenticated()) {
     showToast('请先登录');
     return;
   }
   
   // 添加用户消息
   const userMessage = userInput.value.trim();
-  messages.value.push({ role: 'user', content: userMessage });
+  messages.value.push({
+    role: 'user',
+    content: userMessage,
+    renderedContent: formatMessage(userMessage),
+    streaming: false,
+  });
   userInput.value = '';
-  
+
   // 添加AI消息占位（含思考过程字段）
-  messages.value.push({ role: 'assistant', content: '', thinking: [], thinkingCollapsed: false, thinkingAutoCollapsed: false });
-  
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    renderedContent: '',
+    streaming: true,
+    thinking: [],
+    thinkingCollapsed: false,
+    thinkingAutoCollapsed: false,
+  });
+
   // 滚动到底部
-  await nextTick();
-  scrollToBottom();
-  
+  scheduleScrollToBottom();
+
   // 发送请求
   isLoading.value = true;
   try {
@@ -283,30 +346,28 @@ const sendMessage = async () => {
   } catch (error) {
     console.error('Error fetching AI response:', error);
     // 更新最后一条消息为错误信息
-    messages.value[messages.value.length - 1].content = `发生错误: ${error.message || '请检查网络连接和API设置'}`;
+    const lastMsg = messages.value[messages.value.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant') {
+      lastMsg.content = `发生错误: ${error.message || '请检查网络连接和API设置'}`;
+      lastMsg.renderedContent = formatMessage(lastMsg.content);
+      lastMsg.streaming = false;
+    }
+    scheduleScrollToBottom();
   } finally {
     isLoading.value = false;
-    await nextTick();
-    scrollToBottom();
+    scheduleScrollToBottom();
   }
 };
 
 // 获取AI响应（使用SSE）
 const fetchAIResponse = async (userMessage) => {
   try {
-    // 确保使用正确的相对路径，通过Vite代理访问
-    const url = '/chat/agent/query/stream';
-    // 从localStorage获取token
-    const token = localStorage.getItem('jwt_token') || userStore.token;
-    // console.log('发送AI请求到:', url);
-    // console.log('使用的token:', token);
+    // 使用 /api 前缀避免和前端 /chat 页面路由冲突
+    const url = apiConfig.endpoints.agentQueryStream;
     
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         session_id: sessionId.value || undefined,
         query: userMessage
@@ -352,15 +413,8 @@ const fetchAIResponse = async (userMessage) => {
                     content: json.content || '',
                     details: json.details || null
                   };
-                  // 完整替换消息对象以强制 Vue 重新渲染
-                  messages.value[idx] = {
-                    ...messages.value[idx],
-                    thinking: [...messages.value[idx].thinking, newStep]
-                  };
-                  // 等待 Vue DOM 刷新 + 浏览器 paint
-                  await nextTick();
-                  await new Promise(resolve => requestAnimationFrame(resolve));
-                  scrollToBottom();
+                  messages.value[idx].thinking.push(newStep);
+                  scheduleScrollToBottom();
                 }
               }
               break;
@@ -379,17 +433,12 @@ const fetchAIResponse = async (userMessage) => {
                 const content = json.content || '';
                 if (content) {
                   aiResponse += content;
-                  
-                  // 逐字符显示打字机效果
                   const displayContent = lastMsg.content || '';
                   const remainingContent = aiResponse.substring(displayContent.length);
-                  
-                  for (const char of remainingContent) {
-                    lastMsg.content += char;
-                  await new Promise(resolve => setTimeout(resolve, 0));
-                    scrollToBottom();
-                    // 控制打字速度，每个字符延迟8ms
-                    await new Promise(resolve => setTimeout(resolve, 8));
+                  if (remainingContent) {
+                    lastMsg.content += remainingContent;
+                    lastMsg.streaming = true;
+                    scheduleScrollToBottom();
                   }
                 }
                 // 保存会话ID（不立即跳转，避免中断SSE）
@@ -425,10 +474,16 @@ const fetchAIResponse = async (userMessage) => {
       }
     }
   }
-  
+
   // 如果没有收到任何内容
   if (!aiResponse) {
-    messages.value[messages.value.length - 1].content = '抱歉，我无法生成回复。请检查API设置或稍后再试。';
+    const lastMsg = messages.value[messages.value.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant') {
+      lastMsg.content = '抱歉，我无法生成回复。请检查API设置或稍后再试。';
+      lastMsg.renderedContent = formatMessage(lastMsg.content);
+      lastMsg.streaming = false;
+      scheduleScrollToBottom();
+    }
   }
   } catch (error) {
     console.error('Fetch error:', error);
@@ -440,20 +495,6 @@ const fetchAIResponse = async (userMessage) => {
 const goToSessions = () => {
   router.push('/sessions');
 };
-
-// 滚动到底部
-const scrollToBottom = () => {
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
-  }
-};
-
-// 监听消息变化，自动滚动
-watch(messages, () => {
-  nextTick(() => {
-    scrollToBottom();
-  });
-}, { deep: true });
 
 // 监听路由参数变化，重新加载会话历史
 watch(() => route.params.sessionId, async (newSessionId) => {
@@ -471,6 +512,18 @@ watch(() => route.params.sessionId, async (newSessionId) => {
     }
   }
 }, { immediate: true });
+
+onBeforeUnmount(() => {
+  if (autoCollapseTimer.value) {
+    clearTimeout(autoCollapseTimer.value);
+    autoCollapseTimer.value = null;
+  }
+
+  if (scrollRafId !== null) {
+    cancelAnimationFrame(scrollRafId);
+    scrollRafId = null;
+  }
+});
 
 // 组件挂载时检查是否有当前会话或路由参数中的会话ID
 onMounted(async () => {
@@ -494,8 +547,8 @@ onMounted(async () => {
     // 从store中加载会话历史
     loadSessionHistory(sessionStore.currentSession);
   }
-  
-  scrollToBottom();
+
+  scheduleScrollToBottom();
 });
 
 // 加载会话历史
@@ -505,8 +558,21 @@ const loadSessionHistory = (session) => {
     messages.value = [];
     // 加载历史消息
     session.history.forEach(([userMsg, aiMsg]) => {
-      messages.value.push({ role: 'user', content: userMsg });
-      messages.value.push({ role: 'assistant', content: aiMsg, thinking: [], thinkingCollapsed: true, thinkingAutoCollapsed: true });
+      messages.value.push({
+        role: 'user',
+        content: userMsg,
+        renderedContent: formatMessage(userMsg),
+        streaming: false,
+      });
+      messages.value.push({
+        role: 'assistant',
+        content: aiMsg,
+        renderedContent: formatMessage(aiMsg),
+        thinking: [],
+        thinkingCollapsed: true,
+        thinkingAutoCollapsed: true,
+        streaming: false,
+      });
     });
     // 设置会话ID
     sessionId.value = session.session_id;
@@ -518,6 +584,7 @@ const loadSessionHistory = (session) => {
         last.thinking = saved;
       }
     }
+    scheduleScrollToBottom();
   }
 };
 </script>
@@ -604,7 +671,8 @@ const loadSessionHistory = (session) => {
 .messages-container {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 12px;
+  padding: 16px 12px 32px;
+  overflow-anchor: none;
 }
 
 .message {
@@ -644,10 +712,17 @@ const loadSessionHistory = (session) => {
   box-shadow: 0 1px 3px var(--color-shadow);
 }
 
+.streaming-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+}
+
 /* ==================== 输入区域 ==================== */
 .input-container {
   display: flex;
-  padding: 8px 12px;
+  padding: 8px 12px 18px;
+  margin-bottom: 32px;
   border-top: 1px solid var(--color-border-light);
   background-color: var(--color-card);
   align-items: flex-end;
@@ -891,34 +966,67 @@ const loadSessionHistory = (session) => {
   word-break: break-all;
 }
 
+.thinking-doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .thinking-doc-item {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 2px 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(212, 145, 74, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.64);
   line-height: 1.5;
+}
+
+.thinking-doc-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.thinking-doc-index {
+  flex-shrink: 0;
+  color: var(--color-text-lightest);
+  font-size: 11px;
 }
 
 .thinking-doc-source {
   color: var(--color-text-lighter);
   font-size: 11px;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 600;
+  white-space: normal;
+  word-break: break-word;
 }
 
+.thinking-doc-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.thinking-doc-metric,
 .thinking-doc-score {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(212, 145, 74, 0.1);
   color: var(--color-text-light);
-  font-size: 11px;
-  margin-left: 8px;
-  white-space: nowrap;
+  font-size: 10px;
+  white-space: normal;
 }
 
-.thinking-doc-more {
+.thinking-doc-preview {
   color: var(--color-text-lightest);
   font-size: 11px;
-  margin-top: 2px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .thinking-score-item {

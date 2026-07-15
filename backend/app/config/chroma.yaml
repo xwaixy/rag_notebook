@@ -1,5 +1,6 @@
 collection_name: rag_collection
 persist_directory: data/chromadb
+hnsw_space: cosine
 k: 5
 data_path: data
 md5_hex_store: data/md5_hex_store/md5_hex_store.txt
