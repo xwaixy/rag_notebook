@@ -220,15 +220,21 @@ class TokenRefreshView(APIView):
 @cache_user_info()
 def get_user_info(user):
     serializer = UserSerializer(user)
+    user_id = serializer.data.get('uuid')
+    date_joined = serializer.data.get('date_joined')
     return {
-        "id": serializer.data.get('uuid'),
+        "id": user_id,
+        "uuid": user_id,
         "username": serializer.data.get('username'),
         "email": serializer.data.get('email'),
         "avatar": serializer.data.get('avatar'),
         "telephone": serializer.data.get('telephone'),
         "gender": serializer.data.get('gender'),
         "bio": serializer.data.get('bio'),
-        "create_time": serializer.data.get('date_joined'),
+        "status": serializer.data.get('status'),
+        "is_superuser": serializer.data.get('is_superuser', False),
+        "date_joined": date_joined,
+        "create_time": date_joined,
         "last_login": serializer.data.get('last_login'),
     }
 
@@ -253,6 +259,8 @@ class UserDetailView(AuthenticatedView):
                                 "telephone": openapi.Schema(type=openapi.TYPE_STRING),
                                 "gender": openapi.Schema(type=openapi.TYPE_STRING),
                                 "bio": openapi.Schema(type=openapi.TYPE_STRING),
+                                "status": openapi.Schema(type=openapi.TYPE_INTEGER),
+                                "is_superuser": openapi.Schema(type=openapi.TYPE_BOOLEAN),
                                 "create_time": openapi.Schema(type=openapi.TYPE_STRING),
                                 "last_login": openapi.Schema(type=openapi.TYPE_STRING)
                             }

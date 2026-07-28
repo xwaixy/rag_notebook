@@ -91,6 +91,8 @@ class UserConfig(AppConfig):
             if not app_config.name.startswith('apps.'):
                 continue
             for model in app_config.get_models():
+                if not model._meta.managed:
+                    continue
                 app_tables.append(model._meta.db_table)
 
         # 3. 自动迁移
@@ -104,24 +106,3 @@ class UserConfig(AppConfig):
             except (CommandError, Exception) as e:
                 logger.error('自动迁移失败: %s', e)
                 return
-
-        # 4. 确保测试用户存在
-        self._ensure_test_user()
-
-    def _ensure_test_user(self):
-        """确保测试用户存在（admin/admin1234）"""
-        try:
-            from django.contrib.auth.hashers import make_password
-            from .models import User, UserStatusChoice
-
-            if not User.objects.filter(username='admin').exists():
-                User.objects.create(
-                    username='admin',
-                    email='admin@example.com',
-                    password=make_password('admin1234'),
-                    status=UserStatusChoice.ACTIVE,
-                    is_active=True,
-                )
-                logger.info('测试用户 admin 已创建')
-        except Exception as e:
-            logger.warning('创建测试用户失败: %s', e)

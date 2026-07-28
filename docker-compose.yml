@@ -28,11 +28,17 @@ services:
     restart: unless-stopped
     env_file:
       - ./DjangoUserService/.env.docker
+    environment:
+      BACKEND_DB_NAME: chat_history
+      BACKEND_API_URL: http://backend:8000
+      BACKEND_LOG_DIR: /backend-logs
+      BACKEND_LOG_MAX_LINES: "500"
     depends_on:
       - mysql
       - redis
     volumes:
       - django_media:/app/media
+      - ./backend/logs:/backend-logs:ro
     ports:
       - "8001:8001"
 
@@ -50,7 +56,6 @@ services:
     volumes:
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs
-      - ${LOCAL_MODELS_DIR:-/home/wyl/models}:/models:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

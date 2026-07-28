@@ -55,6 +55,7 @@ export default {
     knowledgeBase: 'Knowledge Base',
     aboutUs: 'About Us',
     settings: 'Settings',
+    adminCenter: 'Admin Center',
     logout: 'Logout',
     profile: 'Profile'
   },

@@ -61,31 +61,40 @@ LangChain-RAG-FastAPI-Service
 
 ## 模型配置说明
 
-本项目支持多种模型接入方式。
+本项目的示例配置默认使用 API 模型：
 
-大语言模型可以使用：
+- LLM：OpenAI 兼容接口，例如 OpenAI 官方接口或第三方中转站。
+- Embedding：在线 Embedding API，例如阿里云百炼 DashScope 兼容接口。
+- PDF 视觉理解：默认关闭，需要处理 PDF 图片内容时可改为在线视觉模型。
+- Reranker：支持阿里云百炼 Qwen3-VL-Rerank API，默认关闭以避免额外费用。
 
-- OpenAI 兼容接口，例如 OpenAI 官方接口或第三方中转站。
-- 阿里云百炼 DashScope。
-- Ollama 本地模型。
-
-向量模型可以使用：
-
-- 阿里云在线 Embedding API。
-- Ollama 本地 Embedding。
-- 本地 SentenceTransformer/Qwen Embedding 模型。
-
-常见配置在 `backend/.env` 或 `backend/.env.docker` 中维护，例如：
+代码中仍保留部分本地模型接入能力，但 Docker 部署模板不再默认挂载本地模型目录。常见配置在 `backend/.env` 或 `backend/.env.docker` 中维护，例如：
 
 ```env
 LLM_TYPE=OPENAI
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 OPENAI_API_KEY=your_api_key
-OPENAI_MODEL_NAME=gpt-5.5
+OPENAI_MODEL_NAME=your_chat_model
+OPENAI_TRUST_ENV=true
 
-EMBED_MODEL_TYPE=LOCAL_QWEN
-LOCAL_EMBED_MODEL_PATH=/models/Qwen3-Embedding-0.6B
-LOCAL_EMBED_DEVICE=cpu
+HTTP_PROXY=http://host.docker.internal:7890
+HTTPS_PROXY=http://host.docker.internal:7890
+NO_PROXY=localhost,127.0.0.1,mysql,redis,django,backend,front,host.docker.internal
+
+EMBED_MODEL_TYPE=ALIYUN
+ALIYUN_ACCESS_KEY_SECRET=your_embedding_api_key
+ALIYUN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ALIYUN_EMBED_MODEL_NAME=qwen3-embedding
+
+VISION_MODEL_TYPE=DISABLED
+
+RERANKER_ENABLED=true
+RERANKER_PROVIDER=ALIYUN
+RERANKER_MODEL_NAME=qwen3-vl-rerank
+RERANKER_WORKSPACE_ID=your_bailian_workspace_id
+RERANKER_REGION=cn-beijing
+RERANKER_TOP_N=8
+RERANKER_TIMEOUT=30
 
 MYSQL_HOST=mysql
 MYSQL_PORT=3306
@@ -110,7 +119,9 @@ cp DjangoUserService/.env.docker.example DjangoUserService/.env.docker
 
 复制后必须编辑这三个文件：
 
-- `.env` 的 `LOCAL_MODELS_DIR` 指向服务器上的模型目录。
+- `.env` 里的 `COMPOSE_PROJECT_NAME` 可按需修改，也可以保持默认。
+- `backend/.env.docker` 需要填写中转站地址、API Key、聊天模型名和 Embedding API Key。
+- 如果服务器访问中转站必须走代理，在 `backend/.env.docker` 中配置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`；如果不需要代理，删除或留空这几项。
 - `backend/.env.docker` 的 `SECRET_KEY` 与 `DjangoUserService/.env.docker` 的 `JWT_SECRET_KEY` 必须相同。
 - Backend 与 Django 的数据库账号密码必须与 `docker/mysql/init/01-init.sql` 中创建的 `rag_app` 用户一致；首次部署前请替换示例密码。
 - 阿里云、OpenAI、LangSmith 等真实 API Key 只写入本地 `.env.docker`，不要提交到 Git。
@@ -184,6 +195,31 @@ docker compose logs -f front
 - 前端页面：http://127.0.0.1:3000
 - FastAPI 服务：http://127.0.0.1:8000
 - Django 服务：http://127.0.0.1:8001
+
+### 8. 管理员后台
+
+项目使用 Django Admin 作为唯一管理员后台。首次启动后执行：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec django \
+  uv run python manage.py createsuperuser
+```
+
+按提示设置管理员邮箱、用户名和密码，然后访问：
+
+```text
+http://127.0.0.1:8001/admin/
+```
+
+系统只允许创建一个超级管理员；已有管理员时再次执行 `createsuperuser` 会被拒绝。项目不再自动创建弱口令测试账号。
+
+后台首页还提供以下功能：
+
+- 系统状态：检查用户数据库、FastAPI 业务数据库、Redis 和 FastAPI readiness。
+- 后端日志：查看 `backend/logs/` 最近生成的日志文件，默认显示每个文件最后 500 行。
+- 业务数据：只读查看会话、消息、笔记和回顾记录。
+
+业务数据由 FastAPI 同时维护 MySQL 和 Chroma 向量库，因此 Django Admin 默认不允许直接编辑或删除这些数据，避免数据库记录和向量索引不一致。
 
 ## 本地开发启动
 

@@ -48,6 +48,11 @@ export default defineConfig({
         target: USER_TARGET,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/file/, '/file')
+      },
+      '/api/ops': {
+        target: USER_TARGET,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/ops/, '/ops')
       }
     }
   }

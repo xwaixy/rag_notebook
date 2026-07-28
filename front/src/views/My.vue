@@ -33,6 +33,12 @@
       <van-cell-group inset>
         <van-cell :title="$t('my.settings')" is-link @click="goToSettings" />
         <van-cell :title="$t('my.knowledgeBase')" is-link @click="goToKnowledgeBase" />
+        <van-cell
+          v-if="isSuperuser"
+          :title="$t('my.adminCenter')"
+          is-link
+          @click="goToAdmin"
+        />
         <van-cell :title="$t('my.aboutUs')" is-link @click="goToAboutUs" />
         <van-cell v-if="isLogin" :title="$t('my.logout')" @click="handleLogout" />
       </van-cell-group>
@@ -42,11 +48,10 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useUserStore } from '../store/user';
 import { useRouter } from 'vue-router';
-import { computed, ref } from 'vue';
-import { showDialog, showToast } from 'vant';
+import { showDialog } from 'vant';
 import TabBar from '../components/TabBar.vue';
 import { useI18n } from 'vue-i18n';
 import { getLoginRedirect, isAuthenticated } from '../utils/auth';
@@ -58,6 +63,7 @@ const { t } = useI18n();
 // 从store获取用户信息和登录状态
 const userInfo = computed(() => userStore.userInfo);
 const isLogin = computed(() => isAuthenticated());
+const isSuperuser = computed(() => userStore.isSuperuser);
 const userBio = computed(() => userStore.getUserBio || t('profile.bio'));
 
 // 跳转到登录页
@@ -87,6 +93,10 @@ const goToSettings = () => {
 // 跳转到知识库管理页面
 const goToKnowledgeBase = () => {
   router.push('/knowledgebase');
+};
+
+const goToAdmin = () => {
+  router.push('/admin');
 };
 
 // 跳转到关于我们页面

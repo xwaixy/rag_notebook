@@ -1,0 +1,26 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+  .log-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 18px; }
+  .log-files { border: 1px solid var(--hairline-color); border-radius: 6px; overflow: hidden; }
+  .log-files a { display: block; padding: 10px 12px; border-bottom: 1px solid var(--hairline-color); }
+  .log-files a.selected { background: var(--selected-bg); font-weight: 700; }
+  .log-content { margin: 0; min-height: 520px; max-height: 72vh; overflow: auto; padding: 14px; color: #e8e8e8; background: #171717; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+  @media (max-width: 800px) { .log-layout { grid-template-columns: 1fr; } }
+</style>
+
+<p>日志目录：{{ log_root }}；每次最多显示最后 {{ max_lines }} 行。</p>
+<div class="log-layout">
+  <div class="log-files">
+    {% for file in log_files %}
+      <a href="?file={{ file.name|urlencode }}" class="{% if file.selected %}selected{% endif %}">
+        {{ file.name }}<br><small>{{ file.size|filesizeformat }}</small>
+      </a>
+    {% empty %}
+      <div style="padding: 12px;">暂无日志文件</div>
+    {% endfor %}
+  </div>
+  <pre class="log-content">{% if content %}{{ content }}{% else %}请选择日志文件，或等待后端生成日志。{% endif %}</pre>
+</div>
+{% endblock %}

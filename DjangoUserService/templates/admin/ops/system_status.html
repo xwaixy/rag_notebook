@@ -1,0 +1,37 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+  .ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .ops-card { border: 1px solid var(--hairline-color); border-radius: 8px; padding: 18px; background: var(--body-bg); }
+  .ops-card strong { display: block; font-size: 28px; margin-top: 8px; }
+  .ops-checks { width: 100%; border-collapse: collapse; }
+  .ops-checks th, .ops-checks td { padding: 12px; border-bottom: 1px solid var(--hairline-color); text-align: left; }
+  .ops-ok { color: #2e7d32; font-weight: 700; }
+  .ops-error { color: #ba2121; font-weight: 700; }
+</style>
+
+<div class="ops-grid">
+  {% for card in cards %}
+  <a class="ops-card" href="{{ card.url }}">
+    <span>{{ card.label }}</span>
+    <strong>{% if card.value is None %}--{% else %}{{ card.value }}{% endif %}</strong>
+  </a>
+  {% endfor %}
+</div>
+
+<div class="module">
+  <table class="ops-checks">
+    <thead><tr><th>服务</th><th>状态</th><th>详情</th></tr></thead>
+    <tbody>
+      {% for check in checks %}
+      <tr>
+        <td>{{ check.label }}</td>
+        <td class="{% if check.ok %}ops-ok{% else %}ops-error{% endif %}">{% if check.ok %}正常{% else %}异常{% endif %}</td>
+        <td>{{ check.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

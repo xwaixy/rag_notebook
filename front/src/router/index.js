@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { showToast } from 'vant'
+import { useUserStore } from '../store/user'
+import pinia from '../store'
 import { getLoginRedirect, isAuthenticated } from '../utils/auth'
 
 const authMeta = { requiresAuth: true }
@@ -73,6 +75,17 @@ const routes = [
       title: '个人信息',
       keepAlive: false,
       ...authMeta,
+    }
+  },
+  {
+    path: '/admin',
+    name: 'AdminDashboard',
+    component: () => import('../views/AdminDashboard.vue'),
+    meta: {
+      title: '管理中心',
+      keepAlive: false,
+      requiresAuth: true,
+      requiresAdmin: true
     }
   },
   {
@@ -157,7 +170,7 @@ const router = createRouter({
 })
 
 // 全局前置守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   // 设置页面标题
   document.title = to.meta.title || 'AI Second Brain'
 
@@ -165,6 +178,23 @@ router.beforeEach((to, from, next) => {
     showToast('请先登录')
     next(getLoginRedirect(to.fullPath))
     return
+  }
+
+  if (to.matched.some((record) => record.meta.requiresAdmin)) {
+    const userStore = useUserStore(pinia)
+    const result = await userStore.ensureUserInfo()
+
+    if (!result.success && !isAuthenticated()) {
+      showToast('登录状态已失效，请重新登录')
+      next(getLoginRedirect(to.fullPath))
+      return
+    }
+
+    if (!userStore.isSuperuser) {
+      showToast('只有管理员可以访问此功能')
+      next('/my')
+      return
+    }
   }
 
   next()

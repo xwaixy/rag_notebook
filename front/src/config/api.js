@@ -19,6 +19,13 @@ export const apiConfig = {
     profile: '/api/user/detail/',
     updateProfile: '/api/user/update/',
     changePassword: '/api/user/change_password/',
+
+    // 管理员功能
+    adminDashboard: '/api/ops/dashboard/',
+    adminUsers: '/api/ops/users/',
+    adminUserStatus: (userId) => `/api/ops/users/${userId}/status/`,
+    adminBusiness: '/api/ops/business/',
+    adminLogs: '/api/ops/logs/',
     
     // 文件上传
     uploadFile: '/api/file/upload/',

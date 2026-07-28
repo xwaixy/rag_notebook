@@ -22,7 +22,8 @@ export const useUserStore = defineStore('user', {
     getUserInfo: (state) => state.userInfo,
     getToken: () => getAuthToken(),
     getLoginStatus: () => Boolean(getAuthToken()),
-    getUserBio: (state) => state.userInfo?.bio || state.userBio
+    getUserBio: (state) => state.userInfo?.bio || state.userBio,
+    isSuperuser: (state) => state.userInfo?.is_superuser === true
   },
   
   actions: {
@@ -128,6 +129,18 @@ export const useUserStore = defineStore('user', {
           message: error.response?.data?.detail || '获取用户信息请求失败，请稍后再试'
         };
       }
+    },
+
+    async ensureUserInfo() {
+      if (!getAuthToken()) {
+        return { success: false, message: '未登录' };
+      }
+
+      if (this.userInfo && typeof this.userInfo.is_superuser === 'boolean') {
+        return { success: true, data: this.userInfo };
+      }
+
+      return this.getUserInfoDetail();
     },
     
     // 更新用户信息

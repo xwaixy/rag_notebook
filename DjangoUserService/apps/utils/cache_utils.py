@@ -5,6 +5,7 @@ from django.core.exceptions import ObjectDoesNotExist
 
 # 缓存配置：用户信息缓存1小时
 USER_INFO_CACHE_TIMEOUT = 3600
+USER_INFO_CACHE_VERSION = "v2"
 
 def cache_user_info(timeout=USER_INFO_CACHE_TIMEOUT):
     """
@@ -17,7 +18,7 @@ def cache_user_info(timeout=USER_INFO_CACHE_TIMEOUT):
             # 从User对象中获取user_id
             user_id = str(user.uuid)
             # 缓存键格式：user:{user_id}
-            cache_key = f"user:{user_id}"
+            cache_key = f"user:{USER_INFO_CACHE_VERSION}:{user_id}"
 
             # 2. 先查缓存：命中则直接返回
             cached_data = cache.get(cache_key)
@@ -42,5 +43,7 @@ def clear_user_cache(user_id):
     清除指定用户的缓存（用户信息修改/密码变更时调用）
     """
     # 缓存键格式：user:{user_id}
-    cache_key = f"user:{user_id}"
-    cache.delete(cache_key)
+    cache.delete_many([
+        f"user:{user_id}",
+        f"user:{USER_INFO_CACHE_VERSION}:{user_id}",
+    ])

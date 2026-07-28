@@ -22,6 +22,8 @@ from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 
+from apps.ops.views import backend_logs, system_status
+
 # Swagger文档配置
 swagger_info = openapi.Info(
     title="用户管理API - Django",
@@ -39,9 +41,12 @@ schema_view = get_schema_view(
 )
 
 urlpatterns = [
+                  path('admin/system-status/', admin.site.admin_view(system_status), name='admin-system-status'),
+                  path('admin/backend-logs/', admin.site.admin_view(backend_logs), name='admin-backend-logs'),
                   path('admin/', admin.site.urls),
                   path('user/', include('apps.user.urls')),
                   path('file/', include('apps.file.urls')),
+                  path('ops/', include('apps.ops.urls')),
                   # Swagger文档端点
                   path('docs/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
                   path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),

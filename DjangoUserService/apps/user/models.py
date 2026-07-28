@@ -1,7 +1,6 @@
 from django.contrib.auth.hashers import make_password
-from django.contrib.auth.models import (
-    AbstractBaseUser, BaseUserManager
-)
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.core.exceptions import ValidationError
 from django.db import models
 from shortuuidfield import ShortUUIDField
 
@@ -49,6 +48,25 @@ class UserManager(BaseUserManager):
 
     create_user.alters_data = True
 
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
+        """创建唯一的 Django Admin 超级管理员。"""
+        if self.model.objects.filter(is_superuser=True).exists():
+            raise ValueError("系统只允许创建一个超级管理员")
+
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        extra_fields.setdefault("is_active", True)
+        extra_fields.setdefault("status", UserStatusChoice.ACTIVE)
+
+        if extra_fields.get("is_staff") is not True:
+            raise ValueError("超级管理员必须设置 is_staff=True")
+        if extra_fields.get("is_superuser") is not True:
+            raise ValueError("超级管理员必须设置 is_superuser=True")
+
+        return self._create_user(username, email, password, **extra_fields)
+
+    create_superuser.alters_data = True
+
     async def acreate_user(self, username, email=None, password=None, **extra_fields):
         return await self._acreate_user(username, email, password, **extra_fields)
 
@@ -62,7 +80,7 @@ class GenderChoice(models.IntegerChoices):
     FEMALE = 2, "女"
     OTHER = 3, "其他"
 
-class User(AbstractBaseUser):
+class User(AbstractBaseUser, PermissionsMixin):
     """
     自定义用户模型，继承自AbstractBaseUser
     """
@@ -74,6 +92,7 @@ class User(AbstractBaseUser):
     email = models.EmailField(unique=True, blank=False)
     telephone = models.CharField(max_length=11, unique=True,null=True, blank=False)
     is_active = models.BooleanField(default=False)
+    is_staff = models.BooleanField(default=False)
     # 用户状态， 只需要关注status字段
     status = models.IntegerField(
         choices=UserStatusChoice,
@@ -97,7 +116,7 @@ class User(AbstractBaseUser):
     # 这里的USERNAME_FIELD是用来鉴权的，在authenticate方法中会使用到
     USERNAME_FIELD = "email"
     # 这里的REQUIRED_FIELDS是用来创建用户时必填的字段，在create_user方法中会使用到
-    REQUIRED_FIELDS = ["username", "password"]
+    REQUIRED_FIELDS = ["username"]
 
     def clean(self):
         super().clean()
@@ -108,6 +127,24 @@ class User(AbstractBaseUser):
 
     def get_short_name(self):
         return self.username
+
+    def save(self, *args, **kwargs):
+        """保证数据库中最多存在一个超级管理员。"""
+        if self.is_superuser:
+            existing_admins = type(self).objects.filter(is_superuser=True)
+            if self.pk:
+                existing_admins = existing_admins.exclude(pk=self.pk)
+            if existing_admins.exists():
+                raise ValidationError("系统只允许存在一个超级管理员")
+
+            self.is_staff = True
+            self.is_active = True
+            self.status = UserStatusChoice.ACTIVE
+        else:
+            # 本项目只有一个管理员，普通用户不能获得 Django Admin 访问权。
+            self.is_staff = False
+
+        return super().save(*args, **kwargs)
 
     class Meta:
         db_table = 'user_service'

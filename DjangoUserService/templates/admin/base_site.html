@@ -1,0 +1,14 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{{ title }} | RAG NoteBook 管理后台{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">RAG NoteBook 管理后台</a></div>
+{% endblock %}
+
+{% block nav-global %}
+<div style="display: flex; gap: 18px; align-items: center; padding-right: 16px;">
+  <a href="{% url 'admin-system-status' %}" style="color: var(--header-link-color);">系统状态</a>
+  <a href="{% url 'admin-backend-logs' %}" style="color: var(--header-link-color);">后端日志</a>
+</div>
+{% endblock %}

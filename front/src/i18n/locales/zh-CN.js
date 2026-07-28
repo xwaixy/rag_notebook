@@ -55,6 +55,7 @@ export default {
     knowledgeBase: '知识库管理',
     aboutUs: '关于我们',
     settings: '设置',
+    adminCenter: '管理中心',
     logout: '退出登录',
     profile: '个人信息'
   },

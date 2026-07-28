@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 
 from app.core.logger_handler import logger
@@ -47,7 +48,7 @@ class _BackgroundInitManager:
             # 2. ChromaDB（NoteService，依赖 embed_model）
             await self._init_note_service()
 
-            # 3. 重排序模型（引入 torch、sentence_transformers 等重型框架）
+            # 3. 按需初始化云端重排序服务。
             await self._init_reranker()
 
             elapsed = time.time() - self._start_time
@@ -90,11 +91,17 @@ class _BackgroundInitManager:
         self.note_service_ready.set()
 
     async def _init_reranker(self):
-        """检查并初始化重排序模型（触发 torch 等重型框架加载）"""
+        """按需初始化重排序模型。"""
+        if os.getenv("RERANKER_ENABLED", "false").lower() != "true":
+            logger.info("✅ 重排序已禁用，跳过云端重排序服务初始化")
+            self.reorder_service = None
+            self.reranker_ready.set()
+            return
+
         from app.rag.reorder_service import ReorderService, check_and_download_reranker_model
 
         await asyncio.to_thread(check_and_download_reranker_model)
-        logger.info("✅ 重排序模型检查完成")
+        logger.info("✅ 重排序服务配置检查完成")
 
         self.reorder_service = ReorderService()
         logger.info("✅ ReorderService 初始化完成")

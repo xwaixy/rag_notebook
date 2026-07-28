@@ -23,7 +23,8 @@ import {
   Image,
   Toast,
   Icon,
-  Popup
+  Popup,
+  Pagination
 } from 'vant'
 
 // 导入Vant样式
@@ -61,6 +62,7 @@ app.use(Image)
 app.use(Toast)
 app.use(Icon)
 app.use(Popup)
+app.use(Pagination)
 
 // 使用路由和状态管理
 app.use(router)

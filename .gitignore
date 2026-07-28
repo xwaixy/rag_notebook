@@ -51,7 +51,7 @@ media/
 # Database
 *.db
 *.sqlite3
-migrations/
+**/migrations/__pycache__/
 
 # Build artifacts
 build/
@@ -62,7 +62,17 @@ dist/
 .coverage
 .coverage.*
 .cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+coverage/
+.tox/
+.nox/
 test/
+
+# Frontend tooling
+.vite/
 
 # Misc
 *.pem

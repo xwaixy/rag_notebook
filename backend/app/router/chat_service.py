@@ -57,7 +57,7 @@ class ChatService:
 
     async def handle_reorder(self, query: str, documents: list[str]) -> list[dict[str, Any]]:
         """
-        使用本地Ollama重排序模型对文档进行中文重排序
+        使用配置的云端重排序模型对文档进行重排序
         :param query: 查询语句
         :param documents: 文档列表
         :return: 排序后的文档列表，包含文档内容和相似度

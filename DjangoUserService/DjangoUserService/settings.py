@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     
     'apps.user.apps.UserConfig',
     'apps.file',
+    'apps.ops.apps.OpsConfig',
 ]
 
 MIDDLEWARE = [
@@ -133,6 +134,21 @@ if db_engine == 'django.db.backends.mysql':
         'use_unicode': True,
         'init_command': 'SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci',
     }
+
+# FastAPI 使用独立的 chat_history 数据库；Django Admin 只读访问其中的业务表。
+backend_database = DATABASES['default'].copy()
+backend_database['NAME'] = os.getenv(
+    'BACKEND_DB_NAME',
+    'chat_history' if db_engine == 'django.db.backends.mysql' else DATABASES['default']['NAME'],
+)
+if 'OPTIONS' in DATABASES['default']:
+    backend_database['OPTIONS'] = DATABASES['default']['OPTIONS'].copy()
+if db_engine != 'django.db.backends.mysql':
+    backend_database['TEST'] = {'MIRROR': 'default'}
+DATABASES['backend'] = backend_database
+
+DATABASE_ROUTERS = ['apps.ops.db_router.BackendDatabaseRouter']
+MIGRATION_MODULES = {'ops': None}
 
 # 使用 MySQL 时，用 PyMySQL 模拟 MySQLdb
 if db_engine == 'django.db.backends.mysql':
@@ -227,6 +243,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 MEDIA_ROOT = BASE_DIR / 'media'
 MEDIA_URL = '/media/'
+
+BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://127.0.0.1:8000')
+BACKEND_STATUS_TIMEOUT = float(os.getenv('BACKEND_STATUS_TIMEOUT', '3'))
+BACKEND_LOG_DIR = os.getenv('BACKEND_LOG_DIR', str(BASE_DIR.parent / 'backend' / 'logs'))
+BACKEND_LOG_MAX_LINES = max(50, min(int(os.getenv('BACKEND_LOG_MAX_LINES', '500')), 2000))
 
 # 允许所有域名跨域访问
 CORS_ALLOW_ALL_ORIGINS = True
